@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#131722">
+<title>XAUUSD Pattern Radar</title>
+<style>
+  :root{
+    --bg:#131722; --panel:#1A2030; --edge:#252D40;
+    --bull:#26A69A; --bear:#EF5350;
+    --gold:#E8C45A; --gold-dim:#9C8434;
+    --text:#E4E8F1; --mute:#8B93A7;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    background:var(--bg);color:var(--text);
+    font-family:'Helvetica Neue','Hiragino Kaku Gothic ProN',sans-serif;
+    padding:14px 12px calc(32px + env(safe-area-inset-bottom));
+    -webkit-tap-highlight-color:transparent;
+  }
+  .mono{font-family:ui-monospace,Menlo,monospace}
+  header{display:flex;justify-content:space-between;align-items:baseline}
+  .brand-eyebrow{font-size:11px;letter-spacing:3px;color:var(--gold-dim);font-weight:700}
+  .brand{font-size:22px;font-weight:800;letter-spacing:1px}
+  .price{font-size:22px;font-weight:700;transition:color .3s}
+  .live{font-size:10px;color:var(--mute);text-align:right}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--bull);margin-right:5px;animation:pulse 1.4s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+  .card{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:12px;margin-top:14px}
+  .hero{background:linear-gradient(135deg,var(--panel) 0%,#1F2436 100%);border-radius:14px;padding:14px 16px}
+  .hero.r1{border-color:var(--gold);box-shadow:0 0 22px rgba(232,196,90,.35)}
+  .hero-eyebrow{font-size:11px;letter-spacing:2.5px;color:var(--gold);font-weight:700;margin-bottom:6px}
+  .hero-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .hero-title{font-size:18px;font-weight:800}
+  .detail{font-size:12.5px;color:var(--mute);margin-top:7px}
+  .bar{margin-top:10px;height:6px;background:#0D111C;border-radius:99px;overflow:hidden}
+  .bar>div{height:100%;background:linear-gradient(90deg,var(--gold-dim),var(--gold));transition:width .6s}
+  .bar-label{font-size:10.5px;color:var(--mute);margin-top:4px}
+
+  .badge{font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:99px;white-space:nowrap}
+  .rank1{background:var(--gold);color:#131722}
+  .rank2{background:#B9C2D0;color:#131722}
+  .rank3{background:#7A5C3A;color:var(--text)}
+  .dir-bull{color:var(--bull);font-weight:700}
+  .dir-bear{color:var(--bear);font-weight:700}
+
+  .tf-head{display:flex;justify-content:space-between;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+  .tf-chip{font-size:13px;font-weight:800;color:var(--gold);background:#0D111C;padding:2px 8px;border-radius:6px}
+  .tf-label{font-size:13px;font-weight:700}
+  canvas{width:100%;border-radius:8px;display:block}
+  .tf-detail{font-size:11px;color:var(--mute);margin-top:6px}
+
+  .section-title{font-size:11px;letter-spacing:2.5px;color:var(--gold);font-weight:700;margin:22px 0 2px}
+  .section-sub{font-size:11px;color:var(--mute);margin-bottom:4px}
+  .ev{display:flex;gap:10px;padding:10px 2px;border-bottom:1px solid var(--edge);align-items:flex-start}
+  .ev:last-child{border-bottom:none}
+  .ev-time{font-size:11px;color:var(--mute);min-width:78px;padding-top:2px}
+  .ev-body{flex:1}
+  .ev-main{font-size:13px;font-weight:700;display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+  .ev-sub{font-size:11px;color:var(--mute);margin-top:3px}
+  .ev-tf{font-size:10px;font-weight:800;color:var(--gold);background:#0D111C;padding:1px 6px;border-radius:5px}
+
+  .status{font-size:12px;color:var(--mute);text-align:center;padding:24px 0}
+  .err{color:var(--bear)}
+  footer{font-size:10.5px;color:var(--mute);text-align:center;margin-top:18px;line-height:1.7}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="brand-eyebrow">PATTERN RADAR</div>
+    <div class="brand">XAUUSD <span style="font-size:11px;color:var(--mute);font-weight:400">(PAXG建て)</span></div>
+  </div>
+  <div style="text-align:right">
+    <div class="price mono" id="price">---.--</div>
+    <div class="live"><span class="dot"></span><span id="liveLabel">接続中...</span></div>
+  </div>
+</header>
+
+<div id="hero"></div>
+<div id="tfCards"></div>
+
+<div class="section-title">▶ 履歴タイムライン</div>
+<div class="section-sub">非起動中に検出されたイベント（過去データから再構築）</div>
+<div class="card" id="timeline"><div class="status">読み込み中...</div></div>
+
+<footer>
+  データ: Binance公開API (PAXG/USDT ≒ 金スポット)<br>
+  XAUUSDとは数ドル程度の乖離あり。形状・タイミング検出用途。
+</footer>
+
+<script>
+/* ================= 設定 ================= */
+const API = "https://data-api.binance.vision/api/v3";
+const SYMBOL = "PAXGUSDT";
+const TFS = [
+  { id:"4H",  interval:"4h",  label:"4時間足", limit:300, refreshMs:60000 },
+  { id:"15M", interval:"15m", label:"15分足",  limit:500, refreshMs:30000 },
+  { id:"5M",  interval:"5m",  label:"5分足",   limit:500, refreshMs:15000 },
+  { id:"1M",  interval:"1m",  label:"1分足",   limit:500, refreshMs:8000  },
+];
+const WINDOW = 64;        // 検出に使う直近バー数
+const HIST_STEP = 2;      // 履歴スキャンの刻み
+const RANK_CLASS = {1:"rank1",2:"rank2",3:"rank3"};
+const RANK_LABEL = {1:"ランク1",2:"ランク2",3:"ランク3"};
+
+const state = {};   // tfId -> { candles, pattern }
+let events = [];    // 履歴イベント
+let lastPrice = null;
+
+/* ================= データ取得 ================= */
+async function fetchKlines(interval, limit){
+  const res = await fetch(`${API}/klines?symbol=${SYMBOL}&interval=${interval}&limit=${limit}`);
+  if(!res.ok) throw new Error("API error " + res.status);
+  const raw = await res.json();
+  return raw.map(k => ({
+    t:+k[0], o:+k[1], h:+k[2], l:+k[3], c:+k[4]
+  }));
+}
+
+/* ================= スイング検出 ================= */
+function findSwings(cs, k=2){
+  const highs=[], lows=[];
+  for(let i=k;i<cs.length-k;i++){
+    let isH=true,isL=true;
+    for(let j=i-k;j<=i+k;j++){
+      if(cs[j].h>cs[i].h)isH=false;
+      if(cs[j].l<cs[i].l)isL=false;
+    }
+    if(isH)highs.push({i,p:cs[i].h});
+    if(isL)lows.push({i,p:cs[i].l});
+  }
+  return {highs,lows};
+}
+
+/* ================= パターン検出 ================= */
+function detectDoubleBottom(cs,sw){
+  const lows=sw.lows;
+  if(lows.length<2)return null;
+  const L2=lows[lows.length-1];
+  for(let a=lows.length-2;a>=0;a--){
+    const L1=lows[a];
+    if(L2.i-L1.i<6)continue;
+    const tol=Math.abs(L1.p-L2.p)/L1.p;
+    if(tol>0.0035)continue;
+    let neck=-Infinity;
+    for(let i=L1.i;i<=L2.i;i++)neck=Math.max(neck,cs[i].h);
+    const bottom=(L1.p+L2.p)/2;
+    const depth=(neck-bottom)/bottom;
+    if(depth<0.0012)continue;
+    const cur=cs[cs.length-1].c;
+    const completion=Math.max(0,Math.min(1.2,(cur-bottom)/(neck-bottom)));
+    const symmetry=1-tol/0.0035;
+    const score=symmetry*35+Math.min(completion,1)*45+Math.min(depth/0.004,1)*20;
+    return {name:"ダブルボトム",dir:"bull",score,completion,neckline:neck,points:[L1,L2],
+      detail:completion>=1?`ネックライン ${neck.toFixed(2)} ブレイク！`:`ネックライン ${neck.toFixed(2)} まであと${((1-completion)*100).toFixed(0)}%`};
+  }
+  return null;
+}
+function detectDoubleTop(cs,sw){
+  const highs=sw.highs;
+  if(highs.length<2)return null;
+  const H2=highs[highs.length-1];
+  for(let a=highs.length-2;a>=0;a--){
+    const H1=highs[a];
+    if(H2.i-H1.i<6)continue;
+    const tol=Math.abs(H1.p-H2.p)/H1.p;
+    if(tol>0.0035)continue;
+    let neck=Infinity;
+    for(let i=H1.i;i<=H2.i;i++)neck=Math.min(neck,cs[i].l);
+    const top=(H1.p+H2.p)/2;
+    const depth=(top-neck)/top;
+    if(depth<0.0012)continue;
+    const cur=cs[cs.length-1].c;
+    const completion=Math.max(0,Math.min(1.2,(top-cur)/(top-neck)));
+    const symmetry=1-tol/0.0035;
+    const score=symmetry*35+Math.min(completion,1)*45+Math.min(depth/0.004,1)*20;
+    return {name:"ダブルトップ",dir:"bear",score,completion,neckline:neck,points:[H1,H2],
+      detail:completion>=1?`ネックライン ${neck.toFixed(2)} ブレイク！`:`ネックライン ${neck.toFixed(2)} まであと${((1-completion)*100).toFixed(0)}%`};
+  }
+  return null;
+}
+function fitLine(pts){
+  const n=pts.length;
+  const mx=pts.reduce((s,p)=>s+p.i,0)/n, my=pts.reduce((s,p)=>s+p.p,0)/n;
+  let num=0,den=0;
+  pts.forEach(p=>{num+=(p.i-mx)*(p.p-my);den+=(p.i-mx)**2});
+  const slope=den===0?0:num/den, intercept=my-slope*mx;
+  let ssr=0,sst=0;
+  pts.forEach(p=>{ssr+=(p.p-(slope*p.i+intercept))**2;sst+=(p.p-my)**2});
+  return {slope,intercept,r2:sst===0?0:1-ssr/sst};
+}
+function detectTrendline(cs,sw){
+  const tryFit=(pts,kind)=>{
+    if(pts.length<3)return null;
+    const use=pts.slice(-4);
+    const {slope,intercept,r2}=fitLine(use);
+    if(r2<0.82)return null;
+    const price=cs[cs.length-1].c;
+    const touches=use.filter(p=>Math.abs(p.p-(slope*p.i+intercept))/p.p<0.0008).length;
+    if(touches<3)return null;
+    const lineNow=slope*(cs.length-1)+intercept;
+    const dist=Math.abs(price-lineNow)/price;
+    const proximity=Math.max(0,1-dist/0.002);
+    const score=touches*16+r2*25+proximity*25;
+    const rising=slope>0;
+    return {
+      name:kind==="sup"?(rising?"上昇トレンドライン":"下降サポートライン"):(rising?"上昇レジスタンス":"下降トレンドライン"),
+      dir:kind==="sup"?"bull":"bear",score,completion:proximity,
+      line:{slope,intercept},points:use,touches,
+      detail:`${touches}回タッチ / ライン乖離 ${(dist*100).toFixed(2)}%`
+    };
+  };
+  const sup=tryFit(sw.lows,"sup"), res=tryFit(sw.highs,"res");
+  if(sup&&res)return sup.score>=res.score?sup:res;
+  return sup||res;
+}
+function scoreToRank(s){return s>=75?1:s>=55?2:3}
+function detectBest(cs){
+  const sw=findSwings(cs);
+  const r=[detectDoubleBottom(cs,sw),detectDoubleTop(cs,sw),detectTrendline(cs,sw)].filter(Boolean);
+  if(!r.length)return null;
+  r.sort((a,b)=>b.score-a.score);
+  r[0].rank=scoreToRank(r[0].score);
+  return r[0];
+}
+
+/* ================= 履歴イベント再構築 ================= */
+function reconstructEvents(tf, candles){
+  const evts=[];
+  let prevName=null, prevBroken=false;
+  for(let end=WINDOW; end<=candles.length; end+=HIST_STEP){
+    const win=candles.slice(end-WINDOW,end);
+    const p=detectBest(win);
+    const time=candles[end-1].t;
+    if(!p){prevName=null;prevBroken=false;continue;}
+    const broken=p.completion>=1;
+    if(p.name!==prevName){
+      evts.push({time, tf:tf.id, type:"form", name:p.name, dir:p.dir, rank:p.rank, detail:p.detail});
+      prevName=p.name; prevBroken=broken;
+      if(broken)evts[evts.length-1].type="break";
+    } else if(broken && !prevBroken && (p.name.includes("ダブル"))){
+      evts.push({time, tf:tf.id, type:"break", name:p.name, dir:p.dir, rank:p.rank, detail:p.detail});
+      prevBroken=true;
+    }
+  }
+  return evts;
+}
+
+/* ================= 描画 ================= */
+function drawChart(canvas, candles, pattern){
+  const W=660,H=230,padR=58,padY=18;
+  canvas.width=W;canvas.height=H;
+  const ctx=canvas.getContext("2d");
+  ctx.fillStyle="#131722";ctx.fillRect(0,0,W,H);
+  const cs=candles.slice(-WINDOW);
+  const lo=Math.min(...cs.map(c=>c.l)), hi=Math.max(...cs.map(c=>c.h));
+  const px=i=>(i/(cs.length-1))*(W-padR-8)+4;
+  const py=p=>H-padY-((p-lo)/(hi-lo))*(H-padY*2);
+
+  ctx.strokeStyle="rgba(255,255,255,0.05)";ctx.lineWidth=1;
+  for(let g=0;g<=4;g++){
+    const y=padY+(g/4)*(H-padY*2);
+    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W-padR,y);ctx.stroke();
+    ctx.fillStyle="#8B93A7";ctx.font="10px monospace";
+    ctx.fillText((hi-(g/4)*(hi-lo)).toFixed(1),W-padR+5,y+3);
+  }
+  const bw=Math.max(2,(W-padR)/cs.length-2);
+  cs.forEach((c,i)=>{
+    const x=px(i),up=c.c>=c.o;
+    const col=up?"#26A69A":"#EF5350";
+    ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(x,py(c.h));ctx.lineTo(x,py(c.l));ctx.stroke();
+    const yO=py(c.o),yC=py(c.c);
+    ctx.fillRect(x-bw/2,Math.min(yO,yC),bw,Math.max(1.5,Math.abs(yO-yC)));
+  });
+  if(!pattern)return;
+  if(pattern.neckline!=null){
+    const y=py(pattern.neckline);
+    ctx.strokeStyle="#E8C45A";ctx.setLineDash([6,4]);ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W-padR,y);ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle="#E8C45A";ctx.font="10px monospace";ctx.fillText("NECK",6,y-5);
+  }
+  if(pattern.line){
+    const {slope,intercept}=pattern.line;
+    const i0=pattern.points[0].i,i1=cs.length-1;
+    ctx.strokeStyle="#E8C45A";ctx.lineWidth=1.8;
+    ctx.beginPath();ctx.moveTo(px(i0),py(slope*i0+intercept));ctx.lineTo(px(i1),py(slope*i1+intercept));ctx.stroke();
+  }
+  pattern.points.forEach(p=>{
+    ctx.beginPath();ctx.arc(px(p.i),py(p.p),4.5,0,Math.PI*2);
+    ctx.strokeStyle="#E8C45A";ctx.lineWidth=2;ctx.stroke();
+  });
+}
+
+/* ================= UI ================= */
+function fmtTime(t){
+  const d=new Date(t);
+  const now=new Date();
+  const sameDay=d.toDateString()===now.toDateString();
+  const hm=d.toTimeString().slice(0,5);
+  return sameDay?hm:`${d.getMonth()+1}/${d.getDate()} ${hm}`;
+}
+function renderHero(){
+  let best=null;
+  TFS.forEach(tf=>{
+    const p=state[tf.id]?.pattern;
+    if(p&&(!best||p.score>best.p.score))best={tf,p};
+  });
+  const el=document.getElementById("hero");
+  if(!best){el.innerHTML="";return;}
+  const {tf,p}=best;
+  el.innerHTML=`
+    <div class="hero ${p.rank===1?'r1':''}" style="margin-top:12px">
+      <div class="hero-eyebrow">▶ 今これ！</div>
+      <div class="hero-row">
+        <span class="badge ${RANK_CLASS[p.rank]}">${RANK_LABEL[p.rank]}</span>
+        <span class="hero-title">${tf.label} ${p.name}</span>
+        <span class="${p.dir==='bull'?'dir-bull':'dir-bear'}" style="font-size:13px">${p.dir==='bull'?'▲ 買い目線':'▼ 売り目線'}</span>
+      </div>
+      <div class="detail">${p.detail}</div>
+      <div class="bar"><div style="width:${Math.min(p.completion,1)*100}%"></div></div>
+      <div class="bar-label mono">形成度 ${(Math.min(p.completion,1)*100).toFixed(0)}% / スコア ${p.score.toFixed(0)}</div>
+    </div>`;
+}
+function renderTfCards(){
+  const wrap=document.getElementById("tfCards");
+  TFS.forEach(tf=>{
+    let card=document.getElementById("card-"+tf.id);
+    if(!card){
+      card=document.createElement("div");
+      card.className="card";card.id="card-"+tf.id;
+      card.innerHTML=`<div class="tf-head">
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="tf-chip mono">${tf.id}</span><span class="tf-label">${tf.label}</span>
+          </div><div id="pat-${tf.id}"></div>
+        </div>
+        <canvas id="cv-${tf.id}"></canvas>
+        <div class="tf-detail mono" id="det-${tf.id}"></div>`;
+      wrap.appendChild(card);
+    }
+    const st=state[tf.id];
+    if(!st)return;
+    const p=st.pattern;
+    document.getElementById("pat-"+tf.id).innerHTML=p
+      ?`<span style="display:flex;gap:7px;align-items:center">
+          <span class="badge ${RANK_CLASS[p.rank]}">${RANK_LABEL[p.rank]}</span>
+          <span class="${p.dir==='bull'?'dir-bull':'dir-bear'}" style="font-size:12.5px">${p.name}</span>
+        </span>`
+      :`<span style="font-size:11.5px;color:var(--mute)">パターン検出なし</span>`;
+    document.getElementById("det-"+tf.id).textContent=p?`${p.detail} ・ 形成度 ${(Math.min(p.completion,1)*100).toFixed(0)}%`:"";
+    drawChart(document.getElementById("cv-"+tf.id),st.candles,p);
+  });
+}
+function renderTimeline(){
+  const el=document.getElementById("timeline");
+  if(!events.length){el.innerHTML=`<div class="status">直近の検出イベントなし</div>`;return;}
+  const sorted=[...events].sort((a,b)=>b.time-a.time).slice(0,30);
+  el.innerHTML=sorted.map(e=>`
+    <div class="ev">
+      <div class="ev-time mono">${fmtTime(e.time)}</div>
+      <div class="ev-body">
+        <div class="ev-main">
+          <span class="ev-tf mono">${e.tf}</span>
+          <span class="${e.dir==='bull'?'dir-bull':'dir-bear'}">${e.name}</span>
+          <span class="badge ${RANK_CLASS[e.rank]}">${RANK_LABEL[e.rank]}</span>
+          ${e.type==='break'?'<span style="color:var(--gold);font-size:11px;font-weight:800">⚡ ブレイク</span>':'<span style="color:var(--mute);font-size:11px">形成検出</span>'}
+        </div>
+        <div class="ev-sub">${e.detail}</div>
+      </div>
+    </div>`).join("");
+}
+function renderPrice(p, prev){
+  const el=document.getElementById("price");
+  el.textContent=p.toFixed(2);
+  el.style.color=prev==null?"var(--text)":(p>=prev?"var(--bull)":"var(--bear)");
+}
+
+/* ================= メインループ ================= */
+async function loadTf(tf, withHistory){
+  const candles=await fetchKlines(tf.interval, tf.limit);
+  state[tf.id]={candles, pattern:detectBest(candles.slice(-WINDOW))};
+  if(withHistory){
+    events=events.filter(e=>e.tf!==tf.id).concat(reconstructEvents(tf,candles));
+  }
+}
+let timersStarted=false;
+async function refreshAll(withHistory){
+  await Promise.all(TFS.map(tf=>loadTf(tf,withHistory)));
+  const cs=state["1M"].candles, p=cs[cs.length-1].c;
+  renderPrice(p,lastPrice);lastPrice=p;
+  renderHero();renderTfCards();
+  if(withHistory)renderTimeline();
+}
+function startTimers(){
+  if(timersStarted)return;
+  timersStarted=true;
+  // 各TF個別リフレッシュ
+  TFS.forEach(tf=>{
+    setInterval(async()=>{
+      if(document.visibilityState!=="visible")return;
+      try{
+        await loadTf(tf,false);
+        if(tf.id==="1M"){
+          const cs=state["1M"].candles, p=cs[cs.length-1].c;
+          renderPrice(p,lastPrice);lastPrice=p;
+        }
+        renderHero();renderTfCards();
+      }catch(e){console.warn(e)}
+    },tf.refreshMs);
+  });
+  // タイムラインは2分ごとに再構築
+  setInterval(async()=>{
+    if(document.visibilityState!=="visible")return;
+    try{await refreshAll(true)}catch(e){console.warn(e)}
+  },120000);
+}
+async function init(){
+  try{
+    await refreshAll(true);
+    document.getElementById("liveLabel").textContent="LIVE";
+    startTimers();
+  }catch(e){
+    document.getElementById("timeline").innerHTML=
+      `<div class="status err">データ取得に失敗。通信環境を確認してリロードして。<br><span class="mono" style="font-size:10px">${e.message}</span></div>`;
+    document.getElementById("liveLabel").textContent="接続エラー";
+  }
+}
+// タブ復帰時に即リフレッシュ（履歴も再構築して「閉じてた間」を反映）
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="visible"){
+    refreshAll(true).then(()=>{
+      document.getElementById("liveLabel").textContent="LIVE";
+    }).catch(()=>{});
+  }
+});
+init();
+</script>
+</body>
+</html>
