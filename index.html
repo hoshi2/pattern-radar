@@ -183,10 +183,20 @@
   <!-- ===== 配信 ===== -->
   <div class="page" id="page-signal">
     <div class="section-title">▶ 配信を読み解く</div>
-    <div class="section-sub">配信文を貼り付け → エントリー/利確を抽出・現在地表示・用語解説</div>
+    <div class="section-sub">配信文を貼付 → 目線/エントリー/利確/根拠を抽出 → 日付ごとに記録</div>
     <textarea id="sigInput" placeholder="配信の文章をここに貼り付け…"></textarea>
-    <button class="btn-primary" id="sigBtn">解析する</button>
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+      <input id="sigDate" type="date" style="flex:1;min-width:130px;background:#0D111C;color:var(--text);border:1px solid var(--edge);border-radius:8px;padding:8px;font-size:13px;font-family:inherit">
+      <input id="sigSource" type="text" placeholder="配信者名(任意)" style="flex:1;min-width:120px;background:#0D111C;color:var(--text);border:1px solid var(--edge);border-radius:8px;padding:8px;font-size:13px;font-family:inherit">
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn-primary" id="sigBtn" style="margin-top:0">解析する</button>
+      <button class="btn-primary" id="sigSaveBtn" style="margin-top:0;background:var(--bull);color:#fff">📌 記録に残す</button>
+    </div>
     <div id="sigResult"></div>
+    <div class="section-title">▶ 配信ログ（過去の記録）</div>
+    <div class="section-sub">要点とタイミングだけを日付ごとに蓄積</div>
+    <div id="sigLog"></div>
   </div>
 
   <!-- ===== 辞典 ===== -->
@@ -194,16 +204,6 @@
     <div class="section-title">▶ パターン辞典</div>
     <div class="section-sub">有名チャートパターンの傾向 ＋ このアプリでの実測成績</div>
     <div id="dictList"></div>
-  </div>
-
-  <!-- ===== 履歴 ===== -->
-  <div class="page" id="page-hist">
-    <div class="section-title">▶ 簡易バックテスト</div>
-    <div class="section-sub">表示期間内のブレイクから12本後の成績（1bp=0.01%）</div>
-    <div class="card" id="stats"><div class="status">計算中...</div></div>
-    <div class="section-title">▶ 履歴タイムライン</div>
-    <div class="section-sub">非起動中に検出されたイベント（過去データから再構築）</div>
-    <div class="card" id="timeline"><div class="status">読み込み中...</div></div>
   </div>
 
   <!-- ===== 実トレード分析 ===== -->
@@ -222,14 +222,30 @@
     <div id="tradeSummary"></div>
   </div>
 
+  <!-- ===== 検証(バックテスト) ===== -->
+  <div class="page" id="page-bt">
+    <div class="section-title">▶ IF検証（もしルールを守っていたら）</div>
+    <div class="section-sub">実トレード履歴を使った仮想損益。実損益タブにデータ読込が必要</div>
+    <div class="card" id="ifTest"><div class="status">実損益タブでレポートを読み込むと表示されます</div></div>
+
+    <div class="section-title">▶ パターン検証</div>
+    <div class="section-sub">過去データでパターンの成績を検証（損切り/利確・条件指定）</div>
+    <div class="card" id="btControls"></div>
+    <div class="card" id="btResult"><div class="status">「検証スタート」で実行</div></div>
+
+    <div class="section-title">▶ 検出タイムライン</div>
+    <div class="section-sub">非起動中に検出されたイベント</div>
+    <div class="card" id="timeline"><div class="status">読み込み中...</div></div>
+  </div>
+
 </div>
 
 <nav>
   <div class="nav-btn on" data-page="radar"><span class="ic">📡</span>レーダー</div>
   <div class="nav-btn" data-page="signal"><span class="ic">📨</span>配信</div>
-  <div class="nav-btn" data-page="dict"><span class="ic">📖</span>辞典</div>
   <div class="nav-btn" data-page="mytrades"><span class="ic">💹</span>実損益</div>
-  <div class="nav-btn" data-page="hist"><span class="ic">🕘</span>検出</div>
+  <div class="nav-btn" data-page="bt"><span class="ic">🔬</span>検証</div>
+  <div class="nav-btn" data-page="dict"><span class="ic">📖</span>辞典</div>
 </nav>
 
 <script>
@@ -259,6 +275,12 @@ let collapsed = JSON.parse(localStorage.getItem("collapsed")||"{}");
 const tdKey = () => localStorage.getItem("tdKey") || "";
 
 /* ================= データ取得 ================= */
+function dedupeSort(arr){
+  // 時刻で昇順ソート＋同一時刻の重複除去（後勝ち）
+  const map=new Map();
+  for(const k of arr){ if(k && !isNaN(k.t)) map.set(k.t,k); }
+  return [...map.values()].sort((a,b)=>a.t-b.t);
+}
 async function fetchKlines(interval, limit){
   const key = tdKey();
   if(key){
@@ -266,15 +288,17 @@ async function fetchKlines(interval, limit){
     const res = await fetch(url);
     const j = await res.json();
     if(j.status === "error") throw new Error("TwelveData: " + (j.message||"error"));
-    return [...j.values].reverse().map(k=>({
+    if(!j.values || !Array.isArray(j.values)) throw new Error("TwelveData: データ形式エラー");
+    const parsed = j.values.map(k=>({
       t: Date.parse(k.datetime.replace(" ","T")+"Z"),
       o:+k.open, h:+k.high, l:+k.low, c:+k.close
-    }));
+    })).filter(k=>!isNaN(k.t)&&k.o>0);
+    return dedupeSort(parsed);
   }
   const res = await fetch(`${BINANCE}/klines?symbol=${SYMBOL}&interval=${interval}&limit=${limit}`);
   if(!res.ok) throw new Error("API error " + res.status);
   const raw = await res.json();
-  return raw.map(k=>({t:+k[0], o:+k[1], h:+k[2], l:+k[3], c:+k[4]}));
+  return dedupeSort(raw.map(k=>({t:+k[0], o:+k[1], h:+k[2], l:+k[3], c:+k[4]})));
 }
 
 /* ================= 基礎関数 ================= */
@@ -578,17 +602,20 @@ function computeStats(){
 /* ================= チャート描画 ================= */
 function drawChart(canvas, candles, pattern, zones, overlay){
   if(!canvas)return;
-  const W=660,H=230,padR=58,padY=18;
+  const W=720,H=320,padR=78,padY=22;
   canvas.width=W;canvas.height=H;
   const ctx=canvas.getContext("2d");
   ctx.fillStyle="#131722";ctx.fillRect(0,0,W,H);
   const cs=candles.slice(-WINDOW);
+  if(!cs.length)return;
   let lo=Math.min(...cs.map(c=>c.l)), hi=Math.max(...cs.map(c=>c.h));
   // overlay(配信の価格帯)が範囲外なら拡張
   if(overlay){
     overlay.forEach(o=>{ if(o.price){lo=Math.min(lo,o.price*0.999);hi=Math.max(hi,o.price*1.001)} });
   }
-  const px=i=>(i/(cs.length-1))*(W-padR-8)+4;
+  // ゼロ幅/異常レンジ保護（全足が同値だと描画が壊れる）
+  if(!isFinite(lo)||!isFinite(hi)||hi-lo<=0){ const mid=cs[cs.length-1].c; lo=mid*0.999; hi=mid*1.001; }
+  const px=i=>(i/Math.max(1,cs.length-1))*(W-padR-10)+5;
   const py=p=>H-padY-((p-lo)/(hi-lo))*(H-padY*2);
 
   (zones||[]).forEach(z=>{
@@ -600,17 +627,17 @@ function drawChart(canvas, candles, pattern, zones, overlay){
     ctx.beginPath();ctx.moveTo(0,y2);ctx.lineTo(W-padR,y2);ctx.stroke();
   });
 
-  ctx.strokeStyle="rgba(255,255,255,0.05)";ctx.lineWidth=1;
-  for(let g=0;g<=4;g++){
-    const y=padY+(g/4)*(H-padY*2);
+  ctx.strokeStyle="rgba(255,255,255,0.06)";ctx.lineWidth=1;
+  for(let g=0;g<=5;g++){
+    const y=padY+(g/5)*(H-padY*2);
     ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W-padR,y);ctx.stroke();
-    ctx.fillStyle="#8B93A7";ctx.font="10px monospace";
-    ctx.fillText((hi-(g/4)*(hi-lo)).toFixed(1),W-padR+5,y+3);
+    ctx.fillStyle="#AEB6C6";ctx.font="bold 15px ui-monospace,monospace";
+    ctx.fillText((hi-(g/5)*(hi-lo)).toFixed(2),W-padR+7,y+5);
   }
-  const bw=Math.max(2,(W-padR)/cs.length-2);
+  const bw=Math.max(2.5,(W-padR)/cs.length-2.5);
   cs.forEach((c,i)=>{
     const x=px(i),up=c.c>=c.o,col=up?"#26A69A":"#EF5350";
-    ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=1;
+    ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=1.4;
     ctx.beginPath();ctx.moveTo(x,py(c.h));ctx.lineTo(x,py(c.l));ctx.stroke();
     const yO=py(c.o),yC=py(c.c);
     ctx.fillRect(x-bw/2,Math.min(yO,yC),bw,Math.max(1.5,Math.abs(yO-yC)));
@@ -624,13 +651,13 @@ function drawChart(canvas, candles, pattern, zones, overlay){
         ctx.fillStyle=`rgba(${col},0.13)`;ctx.fillRect(0,y1,W-padR,Math.max(3,y2-y1));
         ctx.strokeStyle=`rgba(${col},0.5)`;ctx.lineWidth=1.2;ctx.setLineDash([4,3]);
         ctx.strokeRect(0,y1,W-padR,Math.max(3,y2-y1));ctx.setLineDash([]);
-        ctx.fillStyle=`rgba(${col},0.95)`;ctx.font="bold 10px monospace";
+        ctx.fillStyle=`rgba(${col},0.95)`;ctx.font="bold 13px monospace";
         ctx.fillText(o.label,4,y1-3);
       } else if(o.price!=null){
         const y=py(o.price);
         ctx.strokeStyle="#E8C45A";ctx.setLineDash([2,3]);ctx.lineWidth=1;
         ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W-padR,y);ctx.stroke();ctx.setLineDash([]);
-        ctx.fillStyle="#E8C45A";ctx.font="9px monospace";ctx.fillText(o.label,4,y-2);
+        ctx.fillStyle="#E8C45A";ctx.font="12px monospace";ctx.fillText(o.label,4,y-2);
       }
     });
   }
@@ -640,7 +667,7 @@ function drawChart(canvas, candles, pattern, zones, overlay){
     const y=py(pattern.neckline);
     ctx.strokeStyle="#E8C45A";ctx.setLineDash([6,4]);ctx.lineWidth=1.5;
     ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W-padR,y);ctx.stroke();ctx.setLineDash([]);
-    ctx.fillStyle="#E8C45A";ctx.font="10px monospace";ctx.fillText("NECK",6,y-5);
+    ctx.fillStyle="#E8C45A";ctx.font="13px monospace";ctx.fillText("NECK",6,y-5);
   }
   if(pattern.line){
     const {slope,intercept}=pattern.line, i0=pattern.points[0].i,i1=cs.length-1;
@@ -787,6 +814,7 @@ function renderTimeline(){
 }
 function renderStats(){
   const el=document.getElementById("stats");
+  if(!el)return;
   const stats=computeStats();
   const names=Object.keys(stats).sort((a,b)=>stats[b].n-stats[a].n);
   if(!names.length){el.innerHTML=`<div class="status">集計対象のブレイクイベントなし（データが溜まると表示）</div>`;return;}
@@ -1092,8 +1120,9 @@ document.querySelectorAll(".nav-btn").forEach(btn=>{
     const pg=btn.dataset.page;
     document.getElementById("page-"+pg).classList.add("active");
     if(pg==="dict")renderDict();
-    if(pg==="hist"){renderStats();renderTimeline();}
+    if(pg==="bt"){renderIfTest();renderBtControls();renderTimeline();}
     if(pg==="mytrades")renderTrades();
+    if(pg==="signal")renderSigLog();
     if(pg==="radar")applyCollapse();
     window.scrollTo(0,0);
   });
@@ -1208,6 +1237,108 @@ document.getElementById("collapseBtn").addEventListener("click",()=>{
   applyCollapse();
 });
 document.getElementById("sigBtn").addEventListener("click",analyzeSignal);
+
+/* ================= 配信ログ ================= */
+let sigLogs = JSON.parse(localStorage.getItem("sigLogs")||"[]");
+
+function todayStr(){
+  const d=new Date();const p=n=>String(n).padStart(2,"0");
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+function saveSigLog(){
+  const text=document.getElementById("sigInput").value.trim();
+  if(!text){alert("配信文を貼り付けてください");return;}
+  const date=document.getElementById("sigDate").value||todayStr();
+  const source=document.getElementById("sigSource").value.trim();
+  const plans=parseSignal(text);
+  if(!plans.length){
+    if(!confirm("エントリー情報を自動抽出できませんでした。それでも原文を記録しますか？"))return;
+  }
+  // 要点だけ抽出して保存(口調や煽りは捨てる)
+  const rec={
+    id:Date.now(),
+    date, source,
+    savedAt:new Date().toISOString(),
+    plans:plans.map(pl=>({
+      dir:pl.dir, entryLo:pl.entryLo, entryHi:pl.entryHi,
+      targets:pl.targets, risk:pl.risk,
+      reason:summarizeReason(pl.reason)
+    })),
+    priceAtSave: lastPrice||null
+  };
+  sigLogs.unshift(rec);
+  localStorage.setItem("sigLogs",JSON.stringify(sigLogs));
+  document.getElementById("sigInput").value="";
+  localStorage.removeItem("lastSignal");
+  document.getElementById("sigResult").innerHTML=`<div class="good">✓ ${date}${source?` / ${source}`:""} の配信を記録しました（${rec.plans.length}プラン）</div>`;
+  renderSigLog();
+}
+// 根拠を要点だけに圧縮(無駄な煽り・口調を除去)
+function summarizeReason(r){
+  if(!r)return "";
+  // 主要キーワードを拾って簡潔化
+  const pts=[];
+  if(/急反発|急騰|急上昇/.test(r))pts.push("急騰の反動");
+  if(/急落|急下落/.test(r))pts.push("急落の反動");
+  if(/引き付け/.test(r))pts.push("引き付けて待つ");
+  if(/上髭|上値の重さ|上値が重い/.test(r))pts.push("上値の重さ確認");
+  if(/下髭|下値の堅さ|下げ止まり/.test(r))pts.push("下値の堅さ確認");
+  if(/サポート/.test(r))pts.push("サポート候補");
+  if(/レジスタンス|抵抗/.test(r))pts.push("レジスタンス");
+  if(/プライスアクション/.test(r))pts.push("PA確認後");
+  if(/NY時間|ロンドン|東京時間/.test(r)){const m=r.match(/(NY時間|ロンドン時間?|東京時間)/);if(m)pts.push(m[1]+"狙い");}
+  if(/ブレイク|割れ|抜け/.test(r))pts.push("ブレイク注目");
+  return pts.length?pts.join(" / "):r.slice(0,40);
+}
+function renderSigLog(){
+  const el=document.getElementById("sigLog");
+  if(!sigLogs.length){el.innerHTML=`<div class="card"><div class="status">まだ記録がありません。<br>配信を解析して「📌記録に残す」で蓄積されます。</div></div>`;return;}
+  // 日付でグループ化
+  const byDate={};
+  sigLogs.forEach(r=>{(byDate[r.date]=byDate[r.date]||[]).push(r);});
+  const dates=Object.keys(byDate).sort().reverse();
+  let html="";
+  dates.forEach(d=>{
+    const recs=byDate[d];
+    const days=["日","月","火","水","木","金","土"];
+    const wd=days[new Date(d).getDay()];
+    html+=`<div class="section-title" style="margin-top:16px">${d}（${wd}）<span style="color:var(--mute);font-weight:400;font-size:10px"> ${recs.length}件</span></div>`;
+    recs.forEach(r=>{
+      html+=`<div class="card" style="margin-top:8px">`;
+      if(r.source)html+=`<div style="font-size:11px;color:var(--gold);font-weight:700;margin-bottom:6px">${r.source}</div>`;
+      if(!r.plans.length){
+        html+=`<div style="font-size:12px;color:var(--mute)">原文のみ記録</div>`;
+      }
+      r.plans.forEach(pl=>{
+        const dirTxt=pl.dir==="bull"?'<span class="dir-bull">▲ 買い</span>':'<span class="dir-bear">▼ 売り</span>';
+        html+=`<div style="padding:7px 0;border-bottom:1px solid var(--edge)">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;font-weight:700">
+            ${dirTxt}${pl.risk?'<span class="badge rank3">リスク高</span>':''}
+            ${pl.entryLo!=null?`<span class="mono">${pl.entryLo}〜${pl.entryHi}</span>`:''}
+          </div>
+          ${pl.targets&&pl.targets.length?`<div style="font-size:11.5px;color:var(--mute);margin-top:3px">利確 ${pl.targets.join(" → ")}</div>`:''}
+          ${pl.reason?`<div style="font-size:11.5px;color:var(--text);margin-top:3px">📍 ${pl.reason}</div>`:''}
+        </div>`;
+      });
+      html+=`<div style="text-align:right;margin-top:8px"><span class="tbtn" data-del="${r.id}" style="padding:3px 10px;color:var(--bear)">削除</span></div>`;
+      html+=`</div>`;
+    });
+  });
+  el.innerHTML=html;
+  el.querySelectorAll("[data-del]").forEach(b=>b.addEventListener("click",()=>{
+    if(confirm("この記録を削除しますか？")){
+      sigLogs=sigLogs.filter(r=>r.id!=b.dataset.del);
+      localStorage.setItem("sigLogs",JSON.stringify(sigLogs));
+      renderSigLog();
+    }
+  }));
+}
+document.getElementById("sigSaveBtn").addEventListener("click",saveSigLog);
+// 配信タブ表示時に日付を今日で初期化&ログ描画
+(function(){
+  const sd=document.getElementById("sigDate");
+  if(sd&&!sd.value)sd.value=todayStr();
+})();
 
 /* ================= 実トレード分析 ================= */
 let trades = JSON.parse(localStorage.getItem("trades")||"[]");
@@ -1644,6 +1775,226 @@ function drawCumChart(canvas,labels,data){
   const le=labels[labels.length-1]||"";
   ctx.fillText(le,W-ctx.measureText(le).width-2,H-8);
 }
+
+/* ================= IF検証（実トレードのたられば） ================= */
+function renderIfTest(){
+  const el=document.getElementById("ifTest");
+  if(!el)return;
+  if(!trades.length){el.innerHTML=`<div class="status">実損益タブでレポートを読み込むと表示されます</div>`;return;}
+  const fmt=n=>(n>=0?"+":"")+Math.round(n).toLocaleString()+"円";
+  const col=n=>n>=0?"var(--bull)":"var(--bear)";
+  const actual=trades.reduce((s,t)=>s+t.pnl,0);
+
+  // 各取引の「1ロットあたり損益」を推定（pnl ÷ lot）して、仮定ロットで再計算
+  const perLot=t=>t.lot>0?t.pnl/t.lot:0;
+
+  const scenarios=[];
+  // ① 全部0.05固定
+  [0.05,0.01].forEach(fixLot=>{
+    const pnl=trades.reduce((s,t)=>s+perLot(t)*fixLot,0);
+    scenarios.push({name:`全取引を ${fixLot} ロット固定`, pnl, diff:pnl-actual});
+  });
+  // ② ナンピン(同時決済3玉以上)を最初の1玉だけにしてたら
+  const byClose={};
+  trades.forEach(t=>{if(!t.closeT)return;const k=t.side+"|"+t.closeT;(byClose[k]=byClose[k]||[]).push(t);});
+  let nampinCutPnl=0;
+  Object.values(byClose).forEach(grp=>{
+    if(grp.length>=3){
+      // 最初の1玉だけ採用（増し玉しなかった想定）
+      const first=grp.reduce((a,b)=>(a.id<b.id?a:b));
+      nampinCutPnl+=first.pnl;
+    }else{
+      nampinCutPnl+=grp.reduce((s,t)=>s+t.pnl,0);
+    }
+  });
+  scenarios.push({name:"ナンピンせず1玉だけにしてたら", pnl:nampinCutPnl, diff:nampinCutPnl-actual});
+  // ③ 基準超え(0.05超)を全部やめてたら
+  const noBig=trades.filter(t=>t.lot<=0.05).reduce((s,t)=>s+t.pnl,0);
+  scenarios.push({name:"0.05超の取引を全部やめてたら", pnl:noBig, diff:noBig-actual});
+  // ④ Buyを全部やめてたら / Sellを全部やめてたら
+  const noBuy=trades.filter(t=>t.side!=="Buy").reduce((s,t)=>s+t.pnl,0);
+  const noSell=trades.filter(t=>t.side!=="Sell").reduce((s,t)=>s+t.pnl,0);
+  scenarios.push({name:"Buy(買い)を全部やめてたら", pnl:noBuy, diff:noBuy-actual});
+  scenarios.push({name:"Sell(売り)を全部やめてたら", pnl:noSell, diff:noSell-actual});
+
+  let html=`<div class="mtrow"><span class="nm">実際の損益</span><span class="mono" style="color:${col(actual)};font-weight:800">${fmt(actual)}</span></div>`;
+  scenarios.forEach(s=>{
+    html+=`<div class="mtrow"><span class="nm" style="font-size:12.5px">${s.name}</span>
+      <span class="mono" style="text-align:right"><span style="color:${col(s.pnl)};font-weight:700">${fmt(s.pnl)}</span><br><span style="font-size:10.5px;color:${col(s.diff)}">差 ${fmt(s.diff)}</span></span></div>`;
+  });
+  // 一番効くシナリオを強調
+  const best=scenarios.reduce((a,b)=>b.diff>a.diff?b:a);
+  if(best.diff>0)
+    html+=`<div class="good" style="margin-top:10px">✓ <b>「${best.name}」だけで ${fmt(best.diff)} 改善</b>していた計算。<br>これが、形を読む力より先に効くレバー。</div>`;
+  el.innerHTML=html;
+}
+
+/* ================= パターン検証エンジン ================= */
+let btState={tf:"5M", sl:0.3, tp:0.6, cond:"none", bars:600};
+function renderBtControls(){
+  const el=document.getElementById("btControls");
+  if(!el)return;
+  el.innerHTML=`
+    <div style="font-size:12px;color:var(--mute);margin-bottom:8px">条件を選んで検証スタート（${tdKey()?"実XAU/USD":"PAXG"}データ）</div>
+    <div class="kv" style="margin-top:4px"><span class="k" style="min-width:90px">時間足</span>
+      <span class="v"><select id="btTf" class="btsel">${["1M","5M","15M","4H"].map(t=>`<option ${t===btState.tf?"selected":""}>${t}</option>`).join("")}</select></span></div>
+    <div class="kv"><span class="k" style="min-width:90px">損切り(%)</span>
+      <span class="v"><select id="btSl" class="btsel">${[0.15,0.2,0.3,0.5,0.8].map(v=>`<option ${v===btState.sl?"selected":""}>${v}</option>`).join("")}</select></span></div>
+    <div class="kv"><span class="k" style="min-width:90px">利確(%)</span>
+      <span class="v"><select id="btTp" class="btsel">${[0.3,0.5,0.6,1.0,1.5].map(v=>`<option ${v===btState.tp?"selected":""}>${v}</option>`).join("")}</select></span></div>
+    <div class="kv"><span class="k" style="min-width:90px">エントリー条件</span>
+      <span class="v"><select id="btCond" class="btsel">
+        <option value="none" ${btState.cond==="none"?"selected":""}>条件なし(全部)</option>
+        <option value="htf" ${btState.cond==="htf"?"selected":""}>上位足と同方向のみ</option>
+        <option value="zone" ${btState.cond==="zone"?"selected":""}>節目に重なる時のみ</option>
+        <option value="sell" ${btState.cond==="sell"?"selected":""}>売り目線のみ</option>
+      </select></span></div>
+    <button class="btn-primary" id="btRun">▶ 検証スタート</button>`;
+  el.querySelectorAll(".btsel").forEach(s=>s.style.cssText="background:#0D111C;color:var(--text);border:1px solid var(--edge);border-radius:7px;padding:6px 10px;font-size:13px;font-family:inherit");
+  document.getElementById("btRun").addEventListener("click",runBacktest);
+}
+
+async function runBacktest(){
+  const res=document.getElementById("btResult");
+  btState.tf=document.getElementById("btTf").value;
+  btState.sl=parseFloat(document.getElementById("btSl").value);
+  btState.tp=parseFloat(document.getElementById("btTp").value);
+  btState.cond=document.getElementById("btCond").value;
+  res.innerHTML=`<div class="status">データ取得中…（最大2000本）</div>`;
+
+  const tf=TFS.find(t=>t.id===btState.tf);
+  let candles;
+  try{
+    candles=await fetchKlinesLong(tf.interval, 2000);
+  }catch(e){res.innerHTML=`<div class="status err">取得失敗: ${e.message}</div>`;return;}
+  if(candles.length<120){res.innerHTML=`<div class="status err">データ不足(${candles.length}本)</div>`;return;}
+
+  res.innerHTML=`<div class="status">検証中…（${candles.length}本をスキャン）</div>`;
+  await new Promise(r=>setTimeout(r,30));
+
+  // 上位足バイアス用に上位足も取得
+  let htfCandles=null;
+  if(btState.cond==="htf"){
+    const hi=TFS[Math.max(0,TFS.findIndex(t=>t.id===btState.tf)-1)];
+    if(hi.id!==btState.tf){try{htfCandles=await fetchKlinesLong(hi.interval,1500);}catch(e){}}
+  }
+
+  const trades=[];
+  let lastSig=null;
+  for(let end=WINDOW; end<candles.length-1; end++){
+    const win=candles.slice(end-WINDOW,end);
+    const p=detectBest(win);
+    if(!p||p.completion<1||p.neckline==null)continue; // ブレイク確定のみ
+    const sigKey=p.name+":"+Math.round(p.neckline);
+    if(sigKey===lastSig)continue; // 同一シグナル連発を除外
+    lastSig=sigKey;
+
+    // 条件フィルタ
+    if(btState.cond==="sell" && p.dir!=="bear")continue;
+    if(btState.cond==="zone"){
+      const zones=detectZones(win);
+      const key=p.neckline;
+      if(!zones.some(z=>key>=z.lo*0.9994&&key<=z.hi*1.0006))continue;
+    }
+    if(btState.cond==="htf" && htfCandles){
+      const t=candles[end].t;
+      // 同時刻までの上位足でバイアス判定
+      let hi=htfCandles.filter(c=>c.t<=t);
+      if(hi.length<25)continue;
+      const b=biasOf(hi.slice(-WINDOW));
+      if((p.dir==="bull"&&b!==1)||(p.dir==="bear"&&b!==-1))continue;
+    }
+
+    // エントリー=ブレイク足の終値、SL/TP到達を先読み
+    const entry=candles[end].c;
+    const dir=p.dir==="bull"?1:-1;
+    const slP=entry*(1-dir*btState.sl/100);
+    const tpP=entry*(1+dir*btState.tp/100);
+    let outcome=0, exitBar=null;
+    for(let k=end+1;k<Math.min(candles.length,end+60);k++){
+      const c=candles[k];
+      if(dir>0){
+        if(c.l<=slP){outcome=-btState.sl;exitBar=k;break;}
+        if(c.h>=tpP){outcome=btState.tp;exitBar=k;break;}
+      }else{
+        if(c.h>=slP){outcome=-btState.sl;exitBar=k;break;}
+        if(c.l<=tpP){outcome=btState.tp;exitBar=k;break;}
+      }
+    }
+    if(exitBar==null)continue; // 期間内に決着せず
+    trades.push({name:p.name,dir:p.dir,outcome,bars:exitBar-end});
+  }
+
+  renderBtResult(trades);
+}
+async function fetchKlinesLong(interval, total){
+  // Binanceは最大1000/回。TwelveDataは最大5000。複数回取得して結合
+  if(tdKey()){
+    const key=tdKey();
+    const url=`https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${TD_INT[interval]}&outputsize=${Math.min(total,5000)}&timezone=UTC&apikey=${key}`;
+    const r=await fetch(url);const j=await r.json();
+    if(j.status==="error")throw new Error(j.message||"TD error");
+    return [...j.values].reverse().map(k=>({t:Date.parse(k.datetime.replace(" ","T")+"Z"),o:+k.open,h:+k.high,l:+k.low,c:+k.close}));
+  }
+  // Binance: 1000ずつ遡る
+  let all=[], endTime=Date.now();
+  while(all.length<total){
+    const url=`${BINANCE}/klines?symbol=${SYMBOL}&interval=${interval}&limit=1000&endTime=${endTime}`;
+    const r=await fetch(url);if(!r.ok)throw new Error("API "+r.status);
+    const raw=await r.json();if(!raw.length)break;
+    const batch=raw.map(k=>({t:+k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]}));
+    all=batch.concat(all);
+    endTime=batch[0].t-1;
+    if(raw.length<1000)break;
+  }
+  return all.slice(-total);
+}
+function renderBtResult(trades){
+  const res=document.getElementById("btResult");
+  if(!trades.length){res.innerHTML=`<div class="status">条件に合うトレードがありませんでした。条件を緩めて再実行。</div>`;return;}
+  const n=trades.length;
+  const wins=trades.filter(t=>t.outcome>0).length;
+  const wr=wins/n*100;
+  const totalR=trades.reduce((s,t)=>s+t.outcome,0);
+  const expR=totalR/n; // 1トレード平均%
+  const rr=btState.tp/btState.sl;
+  // 期待値(%):勝率×TP - 負率×SL は outcome合計で既に反映
+  const avgBars=trades.reduce((s,t)=>s+t.bars,0)/n;
+  const col=v=>v>=0?"var(--bull)":"var(--bear)";
+  // パターン別
+  const byPat={};
+  trades.forEach(t=>{(byPat[t.name]=byPat[t.name]||{n:0,w:0,sum:0}).n++;if(t.outcome>0)byPat[t.name].w++;byPat[t.name].sum+=t.outcome;});
+
+  let html=`<div class="bigstat">
+    <div class="cell"><div class="lbl">サンプル数</div><div class="num" style="font-size:16px">${n}件</div></div>
+    <div class="cell"><div class="lbl">勝率</div><div class="num" style="font-size:16px">${wr.toFixed(0)}%</div></div>
+    <div class="cell"><div class="lbl">RR</div><div class="num" style="font-size:16px">${rr.toFixed(1)}</div></div>
+  </div>
+  <div class="bigstat">
+    <div class="cell"><div class="lbl">1回の期待値</div><div class="num" style="font-size:16px;color:${col(expR)}">${(expR>=0?"+":"")+expR.toFixed(3)}%</div></div>
+    <div class="cell"><div class="lbl">合計</div><div class="num" style="font-size:16px;color:${col(totalR)}">${(totalR>=0?"+":"")+totalR.toFixed(1)}%</div></div>
+    <div class="cell"><div class="lbl">平均保有</div><div class="num" style="font-size:16px">${avgBars.toFixed(0)}本</div></div>
+  </div>`;
+  // 損益曲線
+  html+=`<canvas id="btCurve" style="margin-top:10px"></canvas>`;
+  // 判定
+  if(expR>0)
+    html+=`<div class="good" style="margin-top:10px">✓ <b>期待値プラス(${(expR>=0?"+":"")+expR.toFixed(3)}%/回)</b>。この条件・損切利確なら、回数を重ねるほど増える計算。RR${rr.toFixed(1)}×勝率${wr.toFixed(0)}%。</div>`;
+  else
+    html+=`<div class="warn" style="margin-top:10px">⚠ <b>期待値マイナス(${expR.toFixed(3)}%/回)</b>。この設定では優位性なし。損切り/利確の比率か条件を変えて再検証を。</div>`;
+  // パターン別
+  html+=`<div style="font-size:11px;color:var(--gold);font-weight:700;margin-top:12px;margin-bottom:4px">パターン別</div>`;
+  Object.keys(byPat).sort((a,b)=>byPat[b].n-byPat[a].n).forEach(nm=>{
+    const s=byPat[nm], w=(s.w/s.n*100).toFixed(0), e=s.sum/s.n;
+    html+=`<div class="mtrow" style="padding:8px 2px"><span class="nm" style="font-size:12.5px">${nm}</span>
+      <span class="mono" style="color:var(--mute)">${s.n}件 ${w}% <span style="color:${col(e)};font-weight:700">${(e>=0?"+":"")+e.toFixed(3)}%</span></span></div>`;
+  });
+  res.innerHTML=html;
+  // 損益曲線描画
+  let cum=0;const curve=trades.map(t=>cum+=t.outcome);
+  drawCumChart(document.getElementById("btCurve"),trades.map((_,i)=>i%10===0?String(i):""),curve);
+}
+
 
 document.getElementById("tradeFileBtn").addEventListener("click",()=>document.getElementById("tradeFile").click());
 document.getElementById("tradeFile").addEventListener("change",e=>{
