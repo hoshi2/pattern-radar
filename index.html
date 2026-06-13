@@ -10,6 +10,7 @@
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="icon" href="icon.png">
 <title>やーまん | XAUUSD Pattern Radar</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg:#131722; --panel:#1A2030; --edge:#252D40;
@@ -116,6 +117,16 @@
   .err{color:var(--bear)}
   footer{font-size:10.5px;color:var(--mute);text-align:center;margin-top:18px;line-height:1.7}
 
+  .bigstat{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+  .bigstat .cell{flex:1;min-width:90px;background:#0D111C;border-radius:10px;padding:10px 12px}
+  .bigstat .lbl{font-size:10.5px;color:var(--mute)}
+  .bigstat .num{font-size:18px;font-weight:800;margin-top:2px}
+  .mtrow{display:flex;justify-content:space-between;gap:8px;padding:9px 2px;border-bottom:1px solid var(--edge);font-size:12.5px;align-items:center}
+  .mtrow:last-child{border-bottom:none}
+  .mtrow .nm{font-weight:700}
+  .warn{font-size:12px;background:rgba(239,83,80,.1);border-left:3px solid var(--bear);border-radius:8px;padding:10px;margin-top:10px;line-height:1.6}
+  .good{font-size:12px;background:rgba(38,166,154,.1);border-left:3px solid var(--bull);border-radius:8px;padding:10px;margin-top:10px;line-height:1.6}
+
   .page{display:none}
   .page.active{display:block}
 
@@ -183,13 +194,30 @@
     <div class="card" id="timeline"><div class="status">読み込み中...</div></div>
   </div>
 
+  <!-- ===== 実トレード分析 ===== -->
+  <div class="page" id="page-mytrades">
+    <div class="section-title">▶ 実トレード分析</div>
+    <div class="section-sub">Vantage/XMのレポート(.csv/.xlsx)を読込 → 注文番号で重複排除して蓄積</div>
+    <div class="card">
+      <input type="file" id="tradeFile" accept=".csv,.xlsx,.xls,.htm,.html" style="display:none" multiple>
+      <button class="btn-primary" id="tradeFileBtn">📂 レポートを読み込む</button>
+      <div id="importMsg" style="font-size:12px;color:var(--mute);margin-top:8px;text-align:center"></div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <span class="tbtn" id="clearTradesBtn">🗑 全消去</span>
+        <span class="tbtn" id="exportTradesBtn">⬇ バックアップ</span>
+      </div>
+    </div>
+    <div id="tradeSummary"></div>
+  </div>
+
 </div>
 
 <nav>
   <div class="nav-btn on" data-page="radar"><span class="ic">📡</span>レーダー</div>
   <div class="nav-btn" data-page="signal"><span class="ic">📨</span>配信</div>
   <div class="nav-btn" data-page="dict"><span class="ic">📖</span>辞典</div>
-  <div class="nav-btn" data-page="hist"><span class="ic">🕘</span>履歴</div>
+  <div class="nav-btn" data-page="mytrades"><span class="ic">💹</span>実損益</div>
+  <div class="nav-btn" data-page="hist"><span class="ic">🕘</span>検出</div>
 </nav>
 
 <script>
@@ -559,9 +587,18 @@ function drawChart(canvas, candles, pattern, zones, overlay){
 
 /* ================= レーダーUI ================= */
 function fmtTime(t){
-  const d=new Date(t), now=new Date();
+  const d=new Date(t);
+  const md=`${d.getMonth()+1}/${d.getDate()}`;
   const hm=d.toTimeString().slice(0,5);
-  return d.toDateString()===now.toDateString()?hm:`${d.getMonth()+1}/${d.getDate()} ${hm}`;
+  return `${md} ${hm}`;
+}
+function fmtTimeFull(t){
+  const d=new Date(t), now=new Date();
+  const md=`${d.getMonth()+1}/${d.getDate()}`;
+  const hm=d.toTimeString().slice(0,5);
+  const days=["日","月","火","水","木","金","土"];
+  const wd=days[d.getDay()];
+  return `${md}(${wd}) ${hm}`;
 }
 function biasChipsHtml(){
   return TFS.map(t=>{
@@ -652,7 +689,7 @@ function renderTimeline(){
   const sorted=[...events].sort((a,b)=>b.time-a.time).slice(0,30);
   el.innerHTML=sorted.map(e=>`
     <div class="ev">
-      <div class="ev-time mono">${fmtTime(e.time)}</div>
+      <div class="ev-time mono">${fmtTimeFull(e.time)}</div>
       <div class="ev-body">
         <div class="ev-main">
           <span class="ev-tf mono">${e.tf}</span>
@@ -944,6 +981,7 @@ document.querySelectorAll(".nav-btn").forEach(btn=>{
     document.getElementById("page-"+pg).classList.add("active");
     if(pg==="dict")renderDict();
     if(pg==="hist"){renderStats();renderTimeline();}
+    if(pg==="mytrades")renderTrades();
     if(pg==="radar")applyCollapse();
     window.scrollTo(0,0);
   });
@@ -1058,6 +1096,256 @@ document.getElementById("collapseBtn").addEventListener("click",()=>{
   applyCollapse();
 });
 document.getElementById("sigBtn").addEventListener("click",analyzeSignal);
+
+/* ================= 実トレード分析 ================= */
+let trades = JSON.parse(localStorage.getItem("trades")||"[]");
+
+function saveTrades(){
+  try{localStorage.setItem("trades",JSON.stringify(trades));}
+  catch(e){alert("保存容量が上限に達しました。古いバックアップを取って全消去してください。");}
+}
+function num(v){
+  if(v==null)return 0;
+  if(typeof v==="number")return v;
+  const s=String(v).replace(/[ ,]/g,"").replace("--","");
+  const n=parseFloat(s);
+  return isNaN(n)?0:n;
+}
+// 列名のゆらぎを吸収するマッピング
+function pick(obj,cands){
+  const keys=Object.keys(obj);
+  for(const c of cands){
+    const k=keys.find(k=>k.replace(/\s/g,"").toLowerCase()===c.replace(/\s/g,"").toLowerCase());
+    if(k!=null)return obj[k];
+  }
+  // 部分一致
+  for(const c of cands){
+    const k=keys.find(k=>k.includes(c));
+    if(k!=null)return obj[k];
+  }
+  return undefined;
+}
+function normalizeRow(r){
+  const id=pick(r,["注文番号","Ticket","Order","Position","ポジション","取引番号","Deal"]);
+  if(id==null)return null;
+  const ids=String(id).replace(/[^\d]/g,"");
+  if(!ids||ids.length<6)return null; // Balance/Credit/合計行を除外
+  const type=String(pick(r,["注文タイプ","Type","タイプ","売買","Side"])||"").trim();
+  const tl=type.toLowerCase();
+  let side= tl.includes("buy")||type.includes("買")? "Buy" : tl.includes("sell")||type.includes("売")? "Sell" : "";
+  if(!side)return null; // balance行など
+  const lot=num(pick(r,["多く","ロット","Lot","Lots","Volume","数量","Size"]));
+  const sym=String(pick(r,["取引商品","銘柄","Symbol","Item","シンボル"])||"XAUUSD").trim();
+  const openP=num(pick(r,["始値","Open Price","Open","オープン価格","Price"]));
+  const closeP=num(pick(r,["終値","Close Price","Close","クローズ価格"]));
+  const openT=pick(r,["開館時間","Open Time","オープン時間","開始時刻"]);
+  let closeT=pick(r,["閉店時間","Close Time","クローズ時間","終了時刻","決済時刻"]);
+  const swap=num(pick(r,["スワップ（オーバーナイト金利）","スワップ","Swap"]));
+  const comm=num(pick(r,["手数料","Commission","コミッション"]));
+  const pnl=num(pick(r,["損益","Profit","P/L","Profit/Loss","利益"]));
+  return {id:ids,sym,side,lot,openP,closeP,openT:fmtDT(openT),closeT:fmtDT(closeT),swap,comm,pnl};
+}
+function fmtDT(s){
+  if(s==null||s==="")return "";
+  // Excelシリアル日付(数値)の場合
+  if(typeof s==="number" || (/^\d+(\.\d+)?$/.test(String(s).trim()) && parseFloat(s)>20000 && parseFloat(s)<90000)){
+    const serial=parseFloat(s);
+    const d=new Date(Math.round((serial-25569)*86400*1000));
+    const p=n=>String(n).padStart(2,"0");
+    return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+  }
+  return String(s).trim().replace(/\./g,"-").replace("T"," ").slice(0,19);
+}
+
+async function parseFile(file){
+  const name=file.name.toLowerCase();
+  const buf=await file.arrayBuffer();
+  let rows=[];
+  // SheetJSは xlsx/xls/csv/html 全部読める
+  try{
+    const wb=XLSX.read(buf,{type:"array"});
+    const ws=wb.Sheets[wb.SheetNames[0]];
+    // ヘッダー行を探す: 「注文番号」or「Ticket」を含む行
+    const aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});
+    let hi=aoa.findIndex(row=>row.some(c=>{
+      const s=String(c||"");
+      return /注文番号|Ticket|Order|ポジション|取引番号/.test(s);
+    }));
+    if(hi<0)hi=0;
+    const headers=aoa[hi].map(h=>String(h==null?"":h).trim());
+    for(let i=hi+1;i<aoa.length;i++){
+      const obj={};
+      headers.forEach((h,j)=>obj[h]=aoa[i][j]);
+      rows.push(obj);
+    }
+  }catch(e){
+    console.error(e);
+    throw new Error("ファイルを読めませんでした: "+e.message);
+  }
+  return rows.map(normalizeRow).filter(Boolean);
+}
+
+async function importFiles(files){
+  const msg=document.getElementById("importMsg");
+  msg.textContent="読み込み中…";
+  let added=0,dup=0,err=0;
+  const existing=new Set(trades.map(t=>t.id));
+  for(const f of files){
+    try{
+      const parsed=await parseFile(f);
+      parsed.forEach(t=>{
+        if(existing.has(t.id)){dup++;return;}
+        existing.add(t.id);trades.push(t);added++;
+      });
+    }catch(e){err++;console.warn(e);}
+  }
+  saveTrades();
+  msg.innerHTML=`✓ 新規 ${added}件 追加 / 重複 ${dup}件スキップ${err?` / 失敗 ${err}件`:""}<br>累計 ${trades.length}件`;
+  renderTrades();
+}
+
+function renderTrades(){
+  const el=document.getElementById("tradeSummary");
+  if(!trades.length){el.innerHTML=`<div class="card"><div class="status">まだデータがありません。<br>レポートを読み込むと分析が表示されます。</div></div>`;return;}
+
+  const tot=trades.reduce((s,t)=>s+t.pnl+t.swap+t.comm,0);
+  const wins=trades.filter(t=>t.pnl>0), losses=trades.filter(t=>t.pnl<0);
+  const wr=wins.length/trades.length*100;
+  const avgW=wins.length?wins.reduce((s,t)=>s+t.pnl,0)/wins.length:0;
+  const avgL=losses.length?losses.reduce((s,t)=>s+t.pnl,0)/losses.length:0;
+  const rrr=avgL!==0?Math.abs(avgW/avgL):0;
+  const fmt=n=>(n>=0?"+":"")+Math.round(n).toLocaleString();
+  const col=n=>n>=0?"var(--bull)":"var(--bear)";
+
+  // Buy/Sell
+  const bySide={};
+  ["Buy","Sell"].forEach(s=>{
+    const a=trades.filter(t=>t.side===s);
+    if(!a.length)return;
+    bySide[s]={n:a.length,pnl:a.reduce((x,t)=>x+t.pnl,0),wr:a.filter(t=>t.pnl>0).length/a.length*100};
+  });
+  // ロット別
+  const byLot={};
+  trades.forEach(t=>{(byLot[t.lot]=byLot[t.lot]||{n:0,pnl:0}).n++,byLot[t.lot].pnl+=t.pnl;});
+  // 日別
+  const byDay={};
+  trades.forEach(t=>{const d=t.closeT.slice(0,10)||"不明";(byDay[d]=byDay[d]||0,byDay[d]+=t.pnl);});
+  const days=Object.keys(byDay).sort();
+  // 累積
+  let cum=0; const cumArr=days.map(d=>{cum+=byDay[d];return cum;});
+
+  let html=`<div class="card">
+    <div class="bigstat">
+      <div class="cell"><div class="lbl">総損益</div><div class="num" style="color:${col(tot)}">${fmt(tot)}</div></div>
+      <div class="cell"><div class="lbl">取引数</div><div class="num">${trades.length}</div></div>
+      <div class="cell"><div class="lbl">勝率</div><div class="num">${wr.toFixed(0)}%</div></div>
+    </div>
+    <div class="bigstat">
+      <div class="cell"><div class="lbl">平均勝ち</div><div class="num" style="color:var(--bull);font-size:15px">${fmt(avgW)}</div></div>
+      <div class="cell"><div class="lbl">平均負け</div><div class="num" style="color:var(--bear);font-size:15px">${fmt(avgL)}</div></div>
+      <div class="cell"><div class="lbl">RRR(損益比)</div><div class="num" style="font-size:15px">${rrr.toFixed(2)}</div></div>
+    </div>
+  </div>`;
+
+  // 累積損益チャート
+  html+=`<div class="section-title">▶ 累積損益の推移</div><div class="card"><canvas id="cumCanvas"></canvas></div>`;
+
+  // Buy vs Sell
+  html+=`<div class="section-title">▶ Buy / Sell 別</div><div class="card">`;
+  ["Buy","Sell"].forEach(s=>{
+    if(!bySide[s])return;
+    const d=bySide[s];
+    html+=`<div class="mtrow"><span class="nm ${s==='Buy'?'dir-bull':'dir-bear'}">${s==='Buy'?'▲ Buy(買い)':'▼ Sell(売り)'}</span>
+      <span class="mono" style="color:var(--mute)">${d.n}件 / 勝率${d.wr.toFixed(0)}% / <span style="color:${col(d.pnl)};font-weight:700">${fmt(d.pnl)}</span></span></div>`;
+  });
+  html+=`</div>`;
+
+  // ロット別
+  html+=`<div class="section-title">▶ ロット別（リスクの源泉）</div><div class="card">`;
+  Object.keys(byLot).map(Number).sort((a,b)=>a-b).forEach(l=>{
+    const d=byLot[l];
+    html+=`<div class="mtrow"><span class="nm mono">${l} ロット</span>
+      <span class="mono" style="color:var(--mute)">${d.n}件 / <span style="color:${col(d.pnl)};font-weight:700">${fmt(d.pnl)}</span></span></div>`;
+  });
+  html+=`</div>`;
+
+  // 自動コメント(優希の弱点に直撃)
+  const lots=Object.keys(byLot).map(Number).sort((a,b)=>a-b);
+  if(lots.length>=2){
+    const big=lots[lots.length-1], small=lots[0];
+    if(byLot[big].pnl<0 && byLot[small].pnl>byLot[big].pnl){
+      html+=`<div class="warn">⚠ <b>ロット ${big} が損失の主因</b>（${fmt(byLot[big].pnl)}）。一方 ${small} は ${fmt(byLot[small].pnl)}。ロットを上げた時に損失が集中する傾向。<b>小ロットで回せている時の規律を、ロットを上げた瞬間に失っていないか</b>を確認。</div>`;
+    }
+  }
+  if(bySide.Buy&&bySide.Sell){
+    const weak=bySide.Buy.pnl<bySide.Sell.pnl?"Buy":"Sell";
+    const wd=bySide[weak];
+    if(wd.pnl<0)
+      html+=`<div class="warn">⚠ この期間は <b>${weak} 側が ${fmt(wd.pnl)}</b> と足を引っ張っている（勝率 ${wd.wr.toFixed(0)}% でも負け＝<b>損大利小</b>）。${weak} の損切りを早める / エントリー根拠を厳しくする余地。</div>`;
+  }
+  if(rrr<1 && wr>50)
+    html+=`<div class="warn">⚠ <b>勝率${wr.toFixed(0)}%なのにRRR ${rrr.toFixed(2)}</b>。勝ってるのにトータルで負ける典型。利確を伸ばす/損切りを縮める＝RRR改善が最優先レバー。</div>`;
+  if(rrr>=1.5)
+    html+=`<div class="good">✓ RRR ${rrr.toFixed(2)} は良好。この損益比を保てている限り、多少勝率が落ちても資金は増える方向。</div>`;
+
+  el.innerHTML=html;
+
+  // 累積チャート描画
+  const cv=document.getElementById("cumCanvas");
+  if(cv&&cumArr.length)drawCumChart(cv,days,cumArr);
+}
+
+function drawCumChart(canvas,labels,data){
+  const W=660,H=240,padL=8,padR=8,padT=16,padB=28;
+  canvas.width=W;canvas.height=H;canvas.style.width="100%";
+  const ctx=canvas.getContext("2d");
+  ctx.fillStyle="#0D111C";ctx.fillRect(0,0,W,H);
+  const lo=Math.min(0,...data),hi=Math.max(0,...data);
+  const range=hi-lo||1;
+  const px=i=>padL+(i/(Math.max(1,data.length-1)))*(W-padL-padR);
+  const py=v=>padT+(1-(v-lo)/range)*(H-padT-padB);
+  // ゼロライン
+  ctx.strokeStyle="rgba(255,255,255,0.15)";ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(0,py(0));ctx.lineTo(W,py(0));ctx.stroke();
+  ctx.fillStyle="#8B93A7";ctx.font="10px monospace";ctx.fillText("0",2,py(0)-3);
+  // 塗り
+  ctx.beginPath();ctx.moveTo(px(0),py(0));
+  data.forEach((v,i)=>ctx.lineTo(px(i),py(v)));
+  ctx.lineTo(px(data.length-1),py(0));ctx.closePath();
+  const endCol=data[data.length-1]>=0?"38,166,154":"239,83,80";
+  ctx.fillStyle=`rgba(${endCol},0.12)`;ctx.fill();
+  // ライン
+  ctx.beginPath();
+  data.forEach((v,i)=>i?ctx.lineTo(px(i),py(v)):ctx.moveTo(px(i),py(v)));
+  ctx.strokeStyle=`rgb(${endCol})`;ctx.lineWidth=2;ctx.stroke();
+  // 終点値
+  const last=data[data.length-1];
+  ctx.fillStyle=`rgb(${endCol})`;ctx.font="bold 12px monospace";
+  ctx.fillText((last>=0?"+":"")+Math.round(last).toLocaleString(),px(data.length-1)-60,py(last)-6);
+  // 日付ラベル(両端)
+  ctx.fillStyle="#8B93A7";ctx.font="9px monospace";
+  ctx.fillText(labels[0]||"",2,H-8);
+  const le=labels[labels.length-1]||"";
+  ctx.fillText(le,W-ctx.measureText(le).width-2,H-8);
+}
+
+document.getElementById("tradeFileBtn").addEventListener("click",()=>document.getElementById("tradeFile").click());
+document.getElementById("tradeFile").addEventListener("change",e=>{
+  if(e.target.files.length)importFiles([...e.target.files]);
+  e.target.value="";
+});
+document.getElementById("clearTradesBtn").addEventListener("click",()=>{
+  if(confirm("蓄積した全トレードデータを消去します。よろしいですか？")){
+    trades=[];saveTrades();document.getElementById("importMsg").textContent="";renderTrades();
+  }
+});
+document.getElementById("exportTradesBtn").addEventListener("click",()=>{
+  const blob=new Blob([JSON.stringify(trades)],{type:"application/json"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download="yaaman_trades_backup.json";
+  a.click();
+});
 
 init();
 </script>
