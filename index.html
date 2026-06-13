@@ -5,11 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="やーまん">
+<meta name="apple-mobile-web-app-title" content="XAU">
 <meta name="theme-color" content="#131722">
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="icon" href="icon.png">
-<title>やーまん | XAUUSD Pattern Radar</title>
+<title>XAU | Pattern Radar</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://s3.tradingview.com/tv.js"></script>
 <style>
@@ -147,8 +147,8 @@
     backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
     border-top:1px solid var(--edge);display:flex;
     padding:8px 6px calc(8px + var(--safeB));z-index:50}
-  .nav-btn{flex:1;text-align:center;color:var(--mute);font-size:10px;font-weight:700;cursor:pointer;user-select:none;padding:2px}
-  .nav-btn .ic{font-size:20px;display:block;line-height:1.2}
+  .nav-btn{flex:1;text-align:center;color:var(--mute);font-size:9.5px;font-weight:700;cursor:pointer;user-select:none;padding:2px 0}
+  .nav-btn .ic{font-size:18px;display:block;line-height:1.25}
   .nav-btn.on{color:var(--gold)}
 </style>
 </head>
@@ -157,7 +157,7 @@
 
   <header>
     <div>
-      <div class="brand-eyebrow">やーまん / PATTERN RADAR</div>
+      <div class="brand-eyebrow">PATTERN RADAR</div>
       <div class="brand">XAUUSD <span class="src" id="srcLabel">(PAXG建て)</span></div>
     </div>
     <div style="text-align:right">
@@ -259,12 +259,21 @@
     <div class="card" id="timeline"><div class="status">読み込み中...</div></div>
   </div>
 
+  <!-- ===== 統計 ===== -->
+  <div class="page" id="page-stats">
+    <div class="section-title">▶ 金チャート統計</div>
+    <div class="section-sub">2026年6月以降のXAUUSDを統計分析。日が経つほど精度が上がる</div>
+    <div class="card" id="statsControls"></div>
+    <div id="statsBody"><div class="status">「分析する」で実行</div></div>
+  </div>
+
 </div>
 
 <nav>
   <div class="nav-btn on" data-page="radar"><span class="ic">📡</span>レーダー</div>
   <div class="nav-btn" data-page="signal"><span class="ic">📨</span>配信</div>
   <div class="nav-btn" data-page="mytrades"><span class="ic">💹</span>実損益</div>
+  <div class="nav-btn" data-page="stats"><span class="ic">📊</span>統計</div>
   <div class="nav-btn" data-page="bt"><span class="ic">🔬</span>検証</div>
   <div class="nav-btn" data-page="dict"><span class="ic">📖</span>辞典</div>
 </nav>
@@ -1171,6 +1180,7 @@ document.querySelectorAll(".nav-btn").forEach(btn=>{
     if(pg==="dict")renderDict();
     if(pg==="bt"){renderIfTest();renderBtControls();renderTimeline();}
     if(pg==="mytrades")renderTrades();
+    if(pg==="stats")renderStatsControls();
     if(pg==="signal")renderSigLog();
     if(pg==="radar")applyCollapse();
     window.scrollTo(0,0);
@@ -2077,7 +2087,7 @@ document.getElementById("restoreFile").addEventListener("change",async e=>{
   try{
     const text=await f.text();
     const data=JSON.parse(text);
-    if(!data.__yaaman__||!data.store)throw new Error("やーまんのバックアップファイルではありません");
+    if(!data.__yaaman__||!data.store)throw new Error("XAUのバックアップファイルではありません");
     // 既存トレードと配信ログはマージ(重複排除)、設定は上書き
     const incoming=data.store;
     let merged={trades:0,sigs:0};
@@ -2140,6 +2150,219 @@ function initTradingView(){
 // tv.js読込後に初期化
 if(typeof TradingView!=="undefined")initTradingView();
 else window.addEventListener("load",()=>setTimeout(initTradingView,400));
+
+/* ================= 金チャート統計エンジン ================= */
+let statCache={tf:null, data:null};
+const WDAY=["日","月","火","水","木","金","土"];
+
+function renderStatsControls(){
+  const el=document.getElementById("statsControls");
+  if(!el)return;
+  el.innerHTML=`
+    <div style="font-size:12px;color:var(--mute);margin-bottom:8px">
+      分析する時間足を選んで実行（${tdKey()?"実XAU/USD":"PAXG"}データ・最大3000本）
+    </div>
+    <div class="kv"><span class="k" style="min-width:80px">時間足</span>
+      <span class="v"><select id="stTf" class="btsel">${["1H","15M","5M","1M","4H","1D"].map(t=>`<option ${t==="1H"?"selected":""}>${t}</option>`).join("")}</select></span></div>
+    <button class="btn-primary" id="stRun">📊 分析する</button>
+    <div style="font-size:10.5px;color:var(--mute);margin-top:8px;line-height:1.6">
+      ${tdKey()?"※実XAUは土日クローズ。曜日分析が正確に出ます。":"⚠ 今はPAXG(暗号資産)。土日も動くため曜日分析が歪みます。⚙でTwelveDataキーを入れると正確になります。"}
+    </div>`;
+  el.querySelectorAll(".btsel").forEach(s=>s.style.cssText="background:#0D111C;color:var(--text);border:1px solid var(--edge);border-radius:7px;padding:6px 10px;font-size:13px;font-family:inherit");
+  document.getElementById("stRun").addEventListener("click",runStats);
+}
+
+async function runStats(){
+  const body=document.getElementById("statsBody");
+  const tfId=document.getElementById("stTf").value;
+  const tf=TFS.find(t=>t.id===tfId);
+  body.innerHTML=`<div class="status">データ取得中…（最大3000本）</div>`;
+  let cs;
+  try{ cs=await fetchKlinesLong(tf.interval,3000); }
+  catch(e){ body.innerHTML=`<div class="status err">取得失敗: ${e.message}</div>`; return; }
+  // 2026年6月以降に限定
+  const cutoff=Date.parse("2026-06-01T00:00:00Z");
+  cs=cs.filter(c=>c.t>=cutoff);
+  if(cs.length<30){ body.innerHTML=`<div class="status err">6月以降のデータが不足（${cs.length}本）。時間足を大きくするか、しばらく運用してから再実行を。</div>`; return; }
+  body.innerHTML=`<div class="status">分析中…（${cs.length}本）</div>`;
+  await new Promise(r=>setTimeout(r,30));
+  statCache={tf:tfId, data:cs};
+  renderStatsBody(cs, tfId);
+}
+
+function renderStatsBody(cs, tfId){
+  const body=document.getElementById("statsBody");
+  const col=v=>v>=0?"var(--bull)":"var(--bear)";
+  const period=`${new Date(cs[0].t).getMonth()+1}/${new Date(cs[0].t).getDate()}〜${new Date(cs[cs.length-1].t).getMonth()+1}/${new Date(cs[cs.length-1].t).getDate()}`;
+
+  // 各足の変化率(%)と値幅
+  const enrich=cs.map(c=>({...c, chg:(c.c-c.o)/c.o*100, rng:(c.h-c.l)/c.o*100, up:c.c>=c.o}));
+
+  let html=`<div class="card"><div style="font-size:12px;color:var(--mute)">対象: <b style="color:var(--text)">${tfId}</b> / ${cs.length}本 / ${period}</div>
+    <div style="font-size:10.5px;color:var(--mute);margin-top:4px">サンプルが少ないうちは参考程度に。日々データが増えるほど信頼度が上がります。</div></div>`;
+
+  // ===== ① 時間帯別 =====
+  const byHour={};
+  enrich.forEach(c=>{const h=new Date(c.t).getHours();(byHour[h]=byHour[h]||{n:0,up:0,chg:0,rng:0});byHour[h].n++;if(c.up)byHour[h].up++;byHour[h].chg+=c.chg;byHour[h].rng+=c.rng;});
+  const hours=Object.keys(byHour).map(Number).sort((a,b)=>a-b);
+  html+=`<div class="section-title">▶ 時間帯別の傾向</div>
+    <div class="section-sub">各時間に始まる足が陽線で終わる確率・平均変動・平均値幅</div>
+    <div class="card"><canvas id="stHour"></canvas>
+    <div style="font-size:10.5px;color:var(--mute);margin-top:6px">緑=上昇しやすい時間 / 赤=下落しやすい時間（端末のローカル時刻）</div></div>`;
+  // ベスト/ワースト時間
+  let bestH=hours[0],worstH=hours[0];
+  hours.forEach(h=>{if(byHour[h].up/byHour[h].n>byHour[bestH].up/byHour[bestH].n)bestH=h;if(byHour[h].up/byHour[h].n<byHour[worstH].up/byHour[worstH].n)worstH=h;});
+  html+=`<div class="card">
+    <div class="mtrow"><span class="nm dir-bull">最も上昇しやすい</span><span class="mono">${bestH}時台 <b>${(byHour[bestH].up/byHour[bestH].n*100).toFixed(0)}%</b> 上昇 (${byHour[bestH].n}本)</span></div>
+    <div class="mtrow"><span class="nm dir-bear">最も下落しやすい</span><span class="mono">${worstH}時台 <b>${(100-byHour[worstH].up/byHour[worstH].n*100).toFixed(0)}%</b> 下落 (${byHour[worstH].n}本)</span></div>`;
+  // 最もボラの高い時間
+  let volH=hours[0];hours.forEach(h=>{if(byHour[h].rng/byHour[h].n>byHour[volH].rng/byHour[volH].n)volH=h;});
+  html+=`<div class="mtrow"><span class="nm" style="color:var(--gold)">最も動く(ボラ大)</span><span class="mono">${volH}時台 平均値幅 ${(byHour[volH].rng/byHour[volH].n).toFixed(2)}%</span></div></div>`;
+
+  // ===== ② 曜日別 =====
+  const byDay={};
+  enrich.forEach(c=>{const d=new Date(c.t).getDay();(byDay[d]=byDay[d]||{n:0,up:0,chg:0,rng:0});byDay[d].n++;if(c.up)byDay[d].up++;byDay[d].chg+=c.chg;byDay[d].rng+=c.rng;});
+  html+=`<div class="section-title">▶ 曜日別の傾向</div>
+    <div class="section-sub">${tdKey()?"実XAUなので平日のみ":"※PAXGは土日も含む"}</div><div class="card">`;
+  [1,2,3,4,5,0,6].forEach(d=>{
+    if(!byDay[d])return;
+    const x=byDay[d], upr=x.up/x.n*100, avgChg=x.chg/x.n;
+    html+=`<div class="mtrow"><span class="nm">${WDAY[d]}曜</span>
+      <span class="mono" style="color:var(--mute)">${x.n}本 / 上昇${upr.toFixed(0)}% / 平均<span style="color:${col(avgChg)};font-weight:700"> ${(avgChg>=0?"+":"")+avgChg.toFixed(3)}%</span></span></div>`;
+  });
+  html+=`</div>`;
+
+  // ===== ③ 時間×曜日 ヒートマップ =====
+  if(tfId!=="1D"&&tfId!=="4H"){
+    html+=`<div class="section-title">▶ 曜日 × 時間帯 ヒートマップ</div>
+      <div class="section-sub">どの曜日の何時が上がりやすいか（緑=上昇優勢）</div>
+      <div class="card" style="overflow-x:auto"><canvas id="stHeat"></canvas></div>`;
+  }
+
+  // ===== ④ 連続性(順張りの有効性) =====
+  let upAfterUp=0,upTotal=0,dnAfterDn=0,dnTotal=0;
+  for(let i=1;i<enrich.length;i++){
+    if(enrich[i-1].up){upTotal++;if(enrich[i].up)upAfterUp++;}
+    else{dnTotal++;if(!enrich[i].up)dnAfterDn++;}
+  }
+  html+=`<div class="section-title">▶ 連続性（順張りは効くか）</div><div class="card">
+    <div class="mtrow"><span class="nm">陽線の次も陽線</span><span class="mono">${upTotal?(upAfterUp/upTotal*100).toFixed(0):0}%</span></div>
+    <div class="mtrow"><span class="nm">陰線の次も陰線</span><span class="mono">${dnTotal?(dnAfterDn/dnTotal*100).toFixed(0):0}%</span></div>`;
+  const cont=((upAfterUp+dnAfterDn)/(upTotal+dnTotal)*100);
+  html+=`<div style="font-size:11.5px;margin-top:8px;color:var(--mute)">${cont>52?"→ 同方向に続きやすい＝<b style='color:var(--bull)'>順張り傾向</b>":cont<48?"→ 逆に振れやすい＝<b style='color:var(--gold)'>逆張り傾向</b>":"→ 方向の偏りは小さい（ランダム寄り）"}</div></div>`;
+
+  // ===== ⑤ 値幅分布(損切り幅の参考) =====
+  const rngs=enrich.map(c=>c.rng).sort((a,b)=>a-b);
+  const pct=p=>rngs[Math.floor(rngs.length*p)]||0;
+  const cur=cs[cs.length-1].c;
+  html+=`<div class="section-title">▶ 1本の値幅分布（損切り幅の参考）</div><div class="card">
+    <div class="mtrow"><span class="nm">中央値(50%)</span><span class="mono">${pct(0.5).toFixed(2)}% ≒ $${(cur*pct(0.5)/100).toFixed(1)}</span></div>
+    <div class="mtrow"><span class="nm">よく動く(75%)</span><span class="mono">${pct(0.75).toFixed(2)}% ≒ $${(cur*pct(0.75)/100).toFixed(1)}</span></div>
+    <div class="mtrow"><span class="nm">大きい(90%)</span><span class="mono">${pct(0.9).toFixed(2)}% ≒ $${(cur*pct(0.9)/100).toFixed(1)}</span></div>
+    <div style="font-size:11px;color:var(--mute);margin-top:8px">→ 損切りを中央値より狭くすると、通常の揺れで切られやすい。${tfId}なら最低 $${(cur*pct(0.5)/100).toFixed(1)} 程度は見ておく目安。</div></div>`;
+
+  // ===== ⑥ パターン後の挙動 =====
+  html+=`<div class="section-title">▶ パターン検出後の挙動</div>
+    <div class="section-sub">各パターンがブレイク後、10本以内に方向通り動いた割合</div><div class="card" id="stPat"><div class="status">集計中…</div></div>`;
+
+  body.innerHTML=html;
+
+  // 描画
+  drawHourStat(document.getElementById("stHour"),hours,byHour);
+  if(document.getElementById("stHeat"))drawHeat(document.getElementById("stHeat"),enrich);
+  setTimeout(()=>renderPatternAfter(cs),20);
+}
+
+function drawHourStat(canvas,hours,byHour){
+  if(!canvas)return;
+  const W=720,H=300,padB=40,padT=20,padL=8,padR=8;
+  canvas.width=W;canvas.height=H;canvas.style.width="100%";
+  const ctx=canvas.getContext("2d");
+  ctx.fillStyle="#0D111C";ctx.fillRect(0,0,W,H);
+  const bw=(W-padL-padR)/hours.length;
+  // 50%ライン
+  const midY=padT+(H-padT-padB)*0.5;
+  ctx.strokeStyle="rgba(255,255,255,0.15)";ctx.setLineDash([4,4]);
+  ctx.beginPath();ctx.moveTo(0,midY);ctx.lineTo(W,midY);ctx.stroke();ctx.setLineDash([]);
+  ctx.fillStyle="#8B93A7";ctx.font="11px monospace";ctx.fillText("50%",2,midY-3);
+  hours.forEach((h,i)=>{
+    const upr=byHour[h].up/byHour[h].n; // 0..1
+    const x=padL+i*bw;
+    const barH=(upr-0.5)*2*(H-padT-padB)*0.5; // 50%基準で上下
+    const col=upr>=0.5?"#26A69A":"#EF5350";
+    ctx.fillStyle=col;
+    if(upr>=0.5)ctx.fillRect(x+bw*0.15,midY-barH,bw*0.7,barH);
+    else ctx.fillRect(x+bw*0.15,midY,bw*0.7,-barH);
+    if(i%2===0||hours.length<=12){ctx.fillStyle="#AEB6C6";ctx.font="12px monospace";ctx.fillText(h,x+bw*0.1,H-14);}
+  });
+  ctx.fillStyle="#8B93A7";ctx.font="11px monospace";ctx.fillText("時 →",W-40,H-14);
+}
+
+function drawHeat(canvas,enrich){
+  // 行=曜日(月〜金 or 全曜日), 列=時間(0-23)
+  const days=[1,2,3,4,5,0,6];
+  const grid={};
+  enrich.forEach(c=>{const d=new Date(c.t);const wd=d.getDay(),h=d.getHours();const k=wd+"_"+h;(grid[k]=grid[k]||{n:0,up:0});grid[k].n++;if(c.up)grid[k].up++;});
+  // 使われてる曜日だけ
+  const usedDays=days.filter(d=>enrich.some(c=>new Date(c.t).getDay()===d));
+  const cell=Math.max(24,Math.floor(680/24));
+  const labelW=36, topH=20;
+  const W=labelW+cell*24+6, H=topH+usedDays.length*cell+6;
+  canvas.width=W;canvas.height=H;canvas.style.width=Math.min(W,1000)+"px";canvas.style.maxWidth="none";
+  const ctx=canvas.getContext("2d");
+  ctx.fillStyle="#0D111C";ctx.fillRect(0,0,W,H);
+  ctx.font="10px monospace";
+  // 時間ヘッダ
+  for(let h=0;h<24;h+=3){ctx.fillStyle="#8B93A7";ctx.fillText(h,labelW+h*cell+2,14);}
+  usedDays.forEach((d,row)=>{
+    ctx.fillStyle="#AEB6C6";ctx.font="bold 12px sans-serif";
+    ctx.fillText(WDAY[d],6,topH+row*cell+cell*0.65);
+    for(let h=0;h<24;h++){
+      const g=grid[d+"_"+h];
+      const x=labelW+h*cell, y=topH+row*cell;
+      if(!g||g.n===0){ctx.fillStyle="#161B28";ctx.fillRect(x,y,cell-2,cell-2);continue;}
+      const upr=g.up/g.n;
+      // 緑(上昇)〜赤(下落)
+      const t=upr; // 0..1
+      const r=Math.round(239*(1-t)+38*t), gg=Math.round(83*(1-t)+166*t), b=Math.round(80*(1-t)+154*t);
+      const alpha=0.3+Math.min(g.n/8,1)*0.6;
+      ctx.fillStyle=`rgba(${r},${gg},${b},${alpha})`;
+      ctx.fillRect(x,y,cell-2,cell-2);
+    }
+  });
+}
+
+function renderPatternAfter(cs){
+  const el=document.getElementById("stPat");
+  if(!el)return;
+  const stats={};
+  let prevName=null;
+  for(let end=WINDOW; end<cs.length-11; end+=1){
+    const win=cs.slice(end-WINDOW,end);
+    const p=detectBest(win);
+    if(!p||p.completion<1||p.neckline==null){prevName=null;continue;}
+    if(p.name===prevName)continue;
+    prevName=p.name;
+    const entry=cs[end].c, dir=p.dir==="bull"?1:-1;
+    // 10本後までで方向通り0.2%以上動いたか
+    let hit=false, maxMove=0;
+    for(let k=end+1;k<=Math.min(cs.length-1,end+10);k++){
+      const mv=(cs[k].c-entry)/entry*100*dir;
+      maxMove=Math.max(maxMove,mv);
+      if(mv>=0.2){hit=true;break;}
+    }
+    const s=stats[p.name]=stats[p.name]||{n:0,hit:0,key:p.key};
+    s.n++; if(hit)s.hit++;
+  }
+  const names=Object.keys(stats).filter(n=>stats[n].n>=2).sort((a,b)=>stats[b].n-stats[a].n);
+  if(!names.length){el.innerHTML=`<div class="status">十分なパターン検出がありません（データ蓄積で増えます）</div>`;return;}
+  el.innerHTML=names.map(n=>{
+    const s=stats[n], r=(s.hit/s.n*100).toFixed(0);
+    const col=s.hit/s.n>=0.55?"var(--bull)":s.hit/s.n>=0.45?"var(--gold)":"var(--bear)";
+    return `<div class="mtrow"><span class="nm" style="font-size:12.5px">${n}</span>
+      <span class="mono" style="color:var(--mute)">${s.n}回中 <span style="color:${col};font-weight:700">${r}%</span> 方向通り</span></div>`;
+  }).join("")+`<div style="font-size:10.5px;color:var(--mute);margin-top:8px">※「方向通り」=ブレイク後10本以内に想定方向へ0.2%以上動いた割合</div>`;
+}
 
 init();
 </script>
