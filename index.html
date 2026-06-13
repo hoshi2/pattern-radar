@@ -11,6 +11,7 @@
 <link rel="icon" href="icon.png">
 <title>やーまん | XAUUSD Pattern Radar</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://s3.tradingview.com/tv.js"></script>
 <style>
   :root{
     --bg:#131722; --panel:#1A2030; --edge:#252D40;
@@ -172,11 +173,19 @@
       <span class="tbtn" id="srcBtn">⚙ データ源</span>
       <span class="tbtn" id="collapseBtn">⊟ 全部たたむ</span>
     </div>
+    <!-- TradingView 本物チャート(答え合わせ用) -->
+    <div class="card" id="tvCard" style="padding:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:12px;font-weight:800;color:var(--gold)">📊 本物チャート (TradingView)</span>
+        <span style="font-size:10.5px;color:var(--mute)">正確な実XAUUSD</span>
+      </div>
+      <div id="tvChart" style="height:340px;border-radius:8px;overflow:hidden"></div>
+    </div>
     <div id="hero"></div>
     <div id="tfCards"></div>
     <footer id="footNote">
-      データ: Binance WebSocket (PAXG/USDT ≒ 金スポット)・リアルタイム配信<br>
-      ⚙からTwelveDataキーで実XAU/USDスポット値に切替可。
+      上=TradingViewの正確なXAUUSD / 下=検出用チャート(PAXG)<br>
+      検出ロジックは下のチャート群に重ねて表示。
     </footer>
   </div>
 
@@ -208,6 +217,19 @@
 
   <!-- ===== 実トレード分析 ===== -->
   <div class="page" id="page-mytrades">
+    <div class="section-title">▶ データのバックアップ</div>
+    <div class="section-sub">全データ(トレード・配信ログ・設定)を1ファイルに。機種変や端末またぎ用</div>
+    <div class="card">
+      <input type="file" id="restoreFile" accept=".json" style="display:none">
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" id="backupAllBtn" style="margin-top:0;flex:1">⬇ 全部書き出す</button>
+        <button class="btn-primary" id="restoreAllBtn" style="margin-top:0;flex:1;background:var(--bull);color:#fff">⬆ 読み込んで復元</button>
+      </div>
+      <div id="backupMsg" style="font-size:11.5px;color:var(--mute);margin-top:8px;text-align:center;line-height:1.6">
+        書き出したファイルをOneDriveやファイルアプリに保存しておけば、いつでも復元できます。
+      </div>
+    </div>
+
     <div class="section-title">▶ 実トレード分析</div>
     <div class="section-sub">Vantage/XMのレポート(.csv/.xlsx)を読込 → 注文番号で重複排除して蓄積</div>
     <div class="card">
@@ -215,8 +237,7 @@
       <button class="btn-primary" id="tradeFileBtn">📂 レポートを読み込む</button>
       <div id="importMsg" style="font-size:12px;color:var(--mute);margin-top:8px;text-align:center"></div>
       <div style="display:flex;gap:8px;margin-top:10px">
-        <span class="tbtn" id="clearTradesBtn">🗑 全消去</span>
-        <span class="tbtn" id="exportTradesBtn">⬇ バックアップ</span>
+        <span class="tbtn" id="clearTradesBtn">🗑 トレード消去</span>
       </div>
     </div>
     <div id="tradeSummary"></div>
@@ -254,14 +275,16 @@ const BINANCE = "https://data-api.binance.vision/api/v3";
 const WS_BASE = "wss://stream.binance.com:9443/ws";
 const SYMBOL = "PAXGUSDT";
 const WS_SYMBOL = "paxgusdt";
-const TD_INT = {"4h":"4h","15m":"15min","5m":"5min","1m":"1min"};
+const TD_INT = {"1d":"1day","4h":"4h","1h":"1h","15m":"15min","5m":"5min","1m":"1min"};
 const TFS = [
+  { id:"1D",  interval:"1d",  label:"日足",    limit:300, tdRefreshMs:900000 },
   { id:"4H",  interval:"4h",  label:"4時間足", limit:300, tdRefreshMs:600000 },
+  { id:"1H",  interval:"1h",  label:"1時間足", limit:400, tdRefreshMs:300000 },
   { id:"15M", interval:"15m", label:"15分足",  limit:500, tdRefreshMs:300000 },
   { id:"5M",  interval:"5m",  label:"5分足",   limit:500, tdRefreshMs:180000 },
   { id:"1M",  interval:"1m",  label:"1分足",   limit:500, tdRefreshMs:60000  },
 ];
-const WS_STREAMS = {"4H":"kline_4h","15M":"kline_15m","5M":"kline_5m","1M":"kline_1m"};
+const WS_STREAMS = {"1D":"kline_1d","4H":"kline_4h","1H":"kline_1h","15M":"kline_15m","5M":"kline_5m","1M":"kline_1m"};
 const WINDOW = 64, HIST_STEP = 2, LOOKAHEAD = 12;
 const RANK_CLASS = {1:"rank1",2:"rank2",3:"rank3"};
 const RANK_LABEL = {1:"ランク1",2:"ランク2",3:"ランク3"};
@@ -649,9 +672,9 @@ function drawChart(canvas, candles, pattern, zones, overlay, tfId){
   ctx.beginPath();ctx.moveTo(0,plotB);ctx.lineTo(W-padR,plotB);ctx.stroke();
   const fmtAxis=(t)=>{
     const d=new Date(t);const p=n=>String(n).padStart(2,"0");
-    // 1分/5分/15分は時刻、1時間は日+時、4時間/日は月日
     if(tfId==="1M"||tfId==="5M"||tfId==="15M")return `${p(d.getHours())}:${p(d.getMinutes())}`;
     if(tfId==="1H")return `${d.getDate()}日${p(d.getHours())}時`;
+    if(tfId==="4H")return `${d.getMonth()+1}/${d.getDate()} ${p(d.getHours())}時`;
     return `${d.getMonth()+1}/${d.getDate()}`;
   };
   const ticks=5;
@@ -2032,13 +2055,91 @@ document.getElementById("clearTradesBtn").addEventListener("click",()=>{
     trades=[];saveTrades();document.getElementById("importMsg").textContent="";renderTrades();
   }
 });
-document.getElementById("exportTradesBtn").addEventListener("click",()=>{
-  const blob=new Blob([JSON.stringify(trades)],{type:"application/json"});
+
+/* ================= 全データ バックアップ / 復元 ================= */
+const BACKUP_KEYS=["trades","sigLogs","deposit","baseLot","dailyLimit","tradePeriod","soundOn","collapsed","tdKey"];
+document.getElementById("backupAllBtn").addEventListener("click",()=>{
+  const data={__yaaman__:1, version:3, exportedAt:new Date().toISOString(), store:{}};
+  BACKUP_KEYS.forEach(k=>{const v=localStorage.getItem(k);if(v!=null)data.store[k]=v;});
+  const blob=new Blob([JSON.stringify(data,null,1)],{type:"application/json"});
   const a=document.createElement("a");
+  const d=new Date();const p=n=>String(n).padStart(2,"0");
   a.href=URL.createObjectURL(blob);
-  a.download="yaaman_trades_backup.json";
+  a.download=`yaaman_backup_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.json`;
   a.click();
+  const tc=trades.length, sc=sigLogs.length;
+  document.getElementById("backupMsg").innerHTML=`✓ 書き出しました（トレード${tc}件 / 配信ログ${sc}件 / 各種設定）<br>このファイルをOneDrive等に保存してください。`;
 });
+document.getElementById("restoreAllBtn").addEventListener("click",()=>document.getElementById("restoreFile").click());
+document.getElementById("restoreFile").addEventListener("change",async e=>{
+  const f=e.target.files[0];e.target.value="";
+  if(!f)return;
+  try{
+    const text=await f.text();
+    const data=JSON.parse(text);
+    if(!data.__yaaman__||!data.store)throw new Error("やーまんのバックアップファイルではありません");
+    // 既存トレードと配信ログはマージ(重複排除)、設定は上書き
+    const incoming=data.store;
+    let merged={trades:0,sigs:0};
+    if(incoming.trades){
+      const inc=JSON.parse(incoming.trades);
+      const seen=new Set(trades.map(t=>t.id));
+      inc.forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);trades.push(t);merged.trades++;}});
+      saveTrades();
+    }
+    if(incoming.sigLogs){
+      const inc=JSON.parse(incoming.sigLogs);
+      const seen=new Set(sigLogs.map(r=>r.id));
+      inc.forEach(r=>{if(!seen.has(r.id)){seen.add(r.id);sigLogs.push(r);merged.sigs++;}});
+      localStorage.setItem("sigLogs",JSON.stringify(sigLogs));
+    }
+    // 設定系は値があれば上書き(現状が空の時のみ復元、を避け、常に復元)
+    ["deposit","baseLot","dailyLimit","tradePeriod","soundOn","collapsed","tdKey"].forEach(k=>{
+      if(incoming[k]!=null)localStorage.setItem(k,incoming[k]);
+    });
+    // メモリ側の変数も更新
+    deposit=parseFloat(localStorage.getItem("deposit")||"0");
+    baseLot=parseFloat(localStorage.getItem("baseLot")||"0");
+    dailyLimit=parseFloat(localStorage.getItem("dailyLimit")||"0");
+    document.getElementById("backupMsg").innerHTML=`✓ 復元完了（新規トレード${merged.trades}件 / 新規配信${merged.sigs}件 追加、設定も反映）`;
+    renderTrades();
+  }catch(err){
+    document.getElementById("backupMsg").innerHTML=`<span style="color:var(--bear)">復元失敗: ${err.message}</span>`;
+  }
+});
+
+/* ================= TradingView 本物チャート ================= */
+let tvWidget=null;
+function initTradingView(){
+  if(tvWidget||typeof TradingView==="undefined")return;
+  try{
+    tvWidget=new TradingView.widget({
+      container_id:"tvChart",
+      symbol:"OANDA:XAUUSD",
+      interval:"5",
+      timezone:"Asia/Tokyo",
+      theme:"dark",
+      style:"1",
+      locale:"ja",
+      toolbar_bg:"#131722",
+      enable_publishing:false,
+      hide_top_toolbar:false,
+      hide_legend:false,
+      allow_symbol_change:false,
+      save_image:false,
+      autosize:true,
+      backgroundColor:"#131722",
+      gridColor:"rgba(255,255,255,0.06)",
+      hide_side_toolbar:true,
+      studies:[]
+    });
+  }catch(e){
+    document.getElementById("tvChart").innerHTML=`<div style="padding:20px;text-align:center;color:var(--mute);font-size:12px">TradingViewチャートの読込に失敗。通信環境を確認してリロード。</div>`;
+  }
+}
+// tv.js読込後に初期化
+if(typeof TradingView!=="undefined")initTradingView();
+else window.addEventListener("load",()=>setTimeout(initTradingView,400));
 
 init();
 </script>
