@@ -27,13 +27,13 @@
     -webkit-tap-highlight-color:transparent;
   }
   .mono{font-family:ui-monospace,Menlo,monospace}
-  #app{padding:calc(12px + var(--safeT)) 12px calc(78px + var(--safeB));max-width:760px;margin:0 auto}
+  #app{padding:calc(12px + var(--safeT)) 14px calc(82px + var(--safeB));max-width:760px;margin:0 auto}
 
   header{display:flex;justify-content:space-between;align-items:baseline}
   .brand-eyebrow{font-size:11px;letter-spacing:3px;color:var(--gold-dim);font-weight:700}
-  .brand{font-size:21px;font-weight:800;letter-spacing:1px}
+  .brand{font-size:22px;font-weight:800;letter-spacing:1px}
   .src{font-size:11px;color:var(--mute);font-weight:400}
-  .price{font-size:22px;font-weight:700;transition:color .15s}
+  .price{font-size:23px;font-weight:700;transition:color .15s}
   .live{font-size:10px;color:var(--mute);text-align:right}
   .dot{display:inline-block;width:7px;height:7px;border-radius:99px;background:var(--bull);margin-right:5px;animation:pulse 1.4s infinite}
   .dot.off{background:var(--bear);animation:none}
@@ -44,8 +44,8 @@
     border:1px solid var(--edge);border-radius:99px;padding:6px 12px;cursor:pointer;user-select:none}
   .tbtn.on{color:#131722;background:var(--gold);border-color:var(--gold)}
 
-  .card{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:12px;margin-top:14px}
-  .hero{background:linear-gradient(135deg,var(--panel) 0%,#1F2436 100%);border:1px solid var(--edge);border-radius:14px;padding:14px 16px;margin-top:12px}
+  .card{background:var(--panel);border:1px solid var(--edge);border-radius:12px;padding:14px;margin-top:14px}
+  .hero{background:linear-gradient(135deg,var(--panel) 0%,#1F2436 100%);border:1px solid var(--edge);border-radius:14px;padding:16px 16px;margin-top:12px}
   .hero.r1{border-color:var(--gold);box-shadow:0 0 22px rgba(232,196,90,.35)}
   .hero-eyebrow{font-size:11px;letter-spacing:2.5px;color:var(--gold);font-weight:700;margin-bottom:6px}
   .hero-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -121,15 +121,15 @@
   .bigstat .cell{flex:1;min-width:90px;background:#0D111C;border-radius:10px;padding:10px 12px}
   .bigstat .lbl{font-size:10.5px;color:var(--mute)}
   .bigstat .num{font-size:18px;font-weight:800;margin-top:2px}
-  .mtrow{display:flex;justify-content:space-between;gap:8px;padding:9px 2px;border-bottom:1px solid var(--edge);font-size:12.5px;align-items:center}
+  .mtrow{display:flex;justify-content:space-between;gap:8px;padding:11px 2px;border-bottom:1px solid var(--edge);font-size:13px;align-items:center}
   .mtrow:last-child{border-bottom:none}
   .mtrow .nm{font-weight:700}
   .warn{font-size:12px;background:rgba(239,83,80,.1);border-left:3px solid var(--bear);border-radius:8px;padding:10px;margin-top:10px;line-height:1.6}
   .good{font-size:12px;background:rgba(38,166,154,.1);border-left:3px solid var(--bull);border-radius:8px;padding:10px;margin-top:10px;line-height:1.6}
 
   .stars{font-size:15px;letter-spacing:1px;color:var(--gold)}
-  .breakdown{margin-top:10px;background:#0D111C;border-radius:8px;padding:8px 10px}
-  .bd-row{display:flex;justify-content:space-between;font-size:11.5px;padding:3px 0;gap:8px}
+  .breakdown{margin-top:10px;background:#0D111C;border-radius:8px;padding:10px 12px}
+  .bd-row{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;gap:8px}
   .bd-row .l{color:var(--mute)}
   .bd-row .v{font-weight:600;text-align:right}
   .bd-ok{color:var(--bull)}
@@ -900,10 +900,38 @@ function analyzeSignal(){
         nearTxt=`<div class="live-near" style="color:var(--mute)">現在地 ${cur.toFixed(2)} → エントリー帯まで約 $${dist.toFixed(1)}（${side}）</div>`;
       }
     }
+    // 損切り目安 + RR計算
+    let slRrHtml="";
+    if(pl.entryLo!=null&&pl.targets.length){
+      const entry=(pl.entryLo+pl.entryHi)/2;
+      // 近くのサポレジゾーンを損切り候補に(なければ帯幅の1.5倍)
+      const zones=state["15M"]?.zones||[];
+      let sl;
+      if(pl.dir==="bull"){
+        // 買い: エントリー下のゾーン下限 or 直近安値
+        const below=zones.filter(z=>z.hi<pl.entryLo).sort((a,b)=>b.hi-a.hi)[0];
+        sl=below?below.lo-(entry-below.lo)*0.05:pl.entryLo-(pl.entryHi-pl.entryLo)-Math.max(2,(pl.entryHi-pl.entryLo));
+      }else{
+        const above=zones.filter(z=>z.lo>pl.entryHi).sort((a,b)=>a.lo-b.lo)[0];
+        sl=above?above.hi+(above.hi-entry)*0.05:pl.entryHi+(pl.entryHi-pl.entryLo)+Math.max(2,(pl.entryHi-pl.entryLo));
+      }
+      const firstTP=pl.targets[0], lastTP=pl.targets[pl.targets.length-1];
+      const risk=Math.abs(entry-sl);
+      const rewardFirst=Math.abs(firstTP-entry);
+      const rewardLast=Math.abs(lastTP-entry);
+      const rrFirst=risk>0?(rewardFirst/risk):0;
+      const rrLast=risk>0?(rewardLast/risk):0;
+      const rrCol=rrLast>=2?"var(--bull)":rrLast>=1?"var(--gold)":"var(--bear)";
+      slRrHtml=`
+        <div class="kv"><span class="k">損切り目安</span><span class="v" style="color:var(--bear)">${sl.toFixed(1)} <span style="color:var(--mute);font-weight:400">(リスク $${risk.toFixed(1)})</span></span></div>
+        <div class="kv"><span class="k">RR比</span><span class="v"><span style="color:${rrCol};font-weight:800">${rrLast.toFixed(1)}</span> <span style="color:var(--mute);font-weight:400">(第1目標 ${rrFirst.toFixed(1)})</span></span></div>
+        ${rrLast<1?'<div style="font-size:11px;color:var(--bear);margin-top:4px">⚠ RRが1未満。リスクに対し利幅が小さい。見送りも検討。</div>':rrLast>=2?'<div style="font-size:11px;color:var(--bull);margin-top:4px">✓ RR良好。リスクに見合う利幅。</div>':''}`;
+    }
     html+=`<div class="plan ${cls}">
-      <div class="plan-h">${dirTxt}${pl.risk?'<span class="badge rank3">リスク高</span>':''}</div>
+      <div class="plan-h">${dirTxt}${pl.risk?'<span class="badge rank3">リスク高</span>':''}${pl.dir==="bull"?'<span style="font-size:10.5px;color:var(--bear)">※買いは自分の弱点</span>':''}</div>
       ${pl.entryLo!=null?`<div class="kv"><span class="k">エントリー</span><span class="v">${pl.entryLo.toFixed(1)} 〜 ${pl.entryHi.toFixed(1)} 反発確認後</span></div>`:""}
       ${pl.targets.length?`<div class="kv"><span class="k">利確目標</span><span class="v">${pl.targets.map(t=>`<span class="tgt-chip">${t}</span>`).join("")}</span></div>`:""}
+      ${slRrHtml}
       ${nearTxt}
       ${pl.reason?`<div class="reason"><b>根拠の翻訳:</b> ${translateReason(pl.reason,pl.dir)}</div>`:""}
     </div>`;
@@ -1184,6 +1212,9 @@ document.getElementById("sigBtn").addEventListener("click",analyzeSignal);
 /* ================= 実トレード分析 ================= */
 let trades = JSON.parse(localStorage.getItem("trades")||"[]");
 let tradePeriod = localStorage.getItem("tradePeriod")||"day";
+let deposit = parseFloat(localStorage.getItem("deposit")||"0");
+let dailyLimit = parseFloat(localStorage.getItem("dailyLimit")||"0");
+let baseLot = parseFloat(localStorage.getItem("baseLot")||"0");
 
 function saveTrades(){
   try{localStorage.setItem("trades",JSON.stringify(trades));}
@@ -1285,7 +1316,19 @@ async function importFiles(files){
     }catch(e){err++;console.warn(e);}
   }
   saveTrades();
-  msg.innerHTML=`✓ 新規 ${added}件 追加 / 重複 ${dup}件スキップ${err?` / 失敗 ${err}件`:""}<br>累計 ${trades.length}件`;
+  let extra="";
+  if(baseLot>0){
+    const overNew=trades.filter(t=>t.lot>baseLot).length;
+    // 直近追加分の超過は厳密には追えないが、全体傾向で注意喚起
+    if(added>0){
+      const recentOver=trades.slice(-added).filter(t=>t.lot>baseLot);
+      if(recentOver.length){
+        const op=recentOver.reduce((s,t)=>s+t.pnl,0);
+        extra=`<br><span style="color:var(--bear);font-weight:700">⚠ 今回の中に基準(${baseLot})超えが ${recentOver.length}件（${(op>=0?"+":"")+Math.round(op).toLocaleString()}円）</span>`;
+      }
+    }
+  }
+  msg.innerHTML=`✓ 新規 ${added}件 追加 / 重複 ${dup}件スキップ${err?` / 失敗 ${err}件`:""}<br>累計 ${trades.length}件${extra}`;
   renderTrades();
 }
 
@@ -1299,120 +1342,273 @@ function renderTrades(){
   const avgW=wins.length?wins.reduce((s,t)=>s+t.pnl,0)/wins.length:0;
   const avgL=losses.length?losses.reduce((s,t)=>s+t.pnl,0)/losses.length:0;
   const rrr=avgL!==0?Math.abs(avgW/avgL):0;
-  const fmt=n=>(n>=0?"+":"")+Math.round(n).toLocaleString();
+  const fmt=n=>(n>=0?"+":"")+Math.round(n).toLocaleString()+"円";
+  const fmtP=n=>Math.round(n).toLocaleString()+"円";
   const col=n=>n>=0?"var(--bull)":"var(--bear)";
 
-  // Buy/Sell
-  const bySide={};
-  ["Buy","Sell"].forEach(s=>{
-    const a=trades.filter(t=>t.side===s);
-    if(!a.length)return;
-    bySide[s]={n:a.length,pnl:a.reduce((x,t)=>x+t.pnl,0),wr:a.filter(t=>t.pnl>0).length/a.length*100};
-  });
-  // ロット別
-  const byLot={};
-  trades.forEach(t=>{(byLot[t.lot]=byLot[t.lot]||{n:0,pnl:0}).n++,byLot[t.lot].pnl+=t.pnl;});
-  // 日別
-  const byDay={};
-  trades.forEach(t=>{const d=t.closeT.slice(0,10)||"不明";(byDay[d]=byDay[d]||0,byDay[d]+=t.pnl);});
-  const days=Object.keys(byDay).sort();
-  // 累積
-  let cum=0; const cumArr=days.map(d=>{cum+=byDay[d];return cum;});
-
+  // ===== サマリー(大きく見やすく) =====
   let html=`<div class="card">
     <div class="bigstat">
-      <div class="cell"><div class="lbl">総損益</div><div class="num" style="color:${col(tot)}">${fmt(tot)}</div></div>
-      <div class="cell"><div class="lbl">取引数</div><div class="num">${trades.length}</div></div>
-      <div class="cell"><div class="lbl">勝率</div><div class="num">${wr.toFixed(0)}%</div></div>
+      <div class="cell"><div class="lbl">取引損益(累計)</div><div class="num" style="color:${col(tot)}">${fmt(tot)}</div></div>
     </div>
     <div class="bigstat">
-      <div class="cell"><div class="lbl">平均勝ち</div><div class="num" style="color:var(--bull);font-size:15px">${fmt(avgW)}</div></div>
-      <div class="cell"><div class="lbl">平均負け</div><div class="num" style="color:var(--bear);font-size:15px">${fmt(avgL)}</div></div>
-      <div class="cell"><div class="lbl">RRR(損益比)</div><div class="num" style="font-size:15px">${rrr.toFixed(2)}</div></div>
+      <div class="cell"><div class="lbl">取引数</div><div class="num" style="font-size:16px">${trades.length}</div></div>
+      <div class="cell"><div class="lbl">勝率</div><div class="num" style="font-size:16px">${wr.toFixed(0)}%</div></div>
+      <div class="cell"><div class="lbl">RRR</div><div class="num" style="font-size:16px">${rrr.toFixed(2)}</div></div>
+    </div>
+    <div class="bigstat">
+      <div class="cell"><div class="lbl">平均勝ち</div><div class="num" style="color:var(--bull);font-size:14px">${fmt(avgW)}</div></div>
+      <div class="cell"><div class="lbl">平均負け</div><div class="num" style="color:var(--bear);font-size:14px">${fmt(avgL)}</div></div>
     </div>
   </div>`;
 
-  // 累積損益チャート
+  // ===== 実質収支(ボーナス分離) =====
+  html+=`<div class="section-title">▶ 実質収支（自分の資金）</div>
+    <div class="card">
+      <div class="mtrow"><span class="nm">入金額（手入力）</span>
+        <span class="mono">${deposit>0?fmtP(deposit):'<span style="color:var(--mute)">未設定</span>'} <span class="tbtn" id="setDeposit" style="margin-left:6px;padding:2px 8px">設定</span></span></div>`;
+  if(deposit>0){
+    const real=deposit+tot;
+    html+=`<div class="mtrow"><span class="nm">取引損益</span><span class="mono" style="color:${col(tot)};font-weight:700">${fmt(tot)}</span></div>
+      <div class="mtrow"><span class="nm" style="font-weight:800">実質の手残り</span><span class="mono" style="color:${col(real)};font-weight:800;font-size:14px">${fmtP(real)}</span></div>
+      <div style="font-size:10.5px;color:var(--mute);margin-top:6px">※ボーナス(クレジット)は含まない、自分が出した資金ベースの増減</div>`;
+  }else{
+    html+=`<div style="font-size:11px;color:var(--mute);margin-top:6px">入金額を設定すると、ボーナスを除いた「自分の資金が増減したか」が分かります。</div>`;
+  }
+  html+=`</div>`;
+
+  // ===== 累積損益チャート =====
+  const byDay={};
+  trades.forEach(t=>{const d=t.closeT.slice(0,10)||"不明";byDay[d]=(byDay[d]||0)+t.pnl;});
+  const days=Object.keys(byDay).filter(d=>d!=="不明").sort();
+  let cum=0; const cumArr=days.map(d=>{cum+=byDay[d];return cum;});
   html+=`<div class="section-title">▶ 累積損益の推移</div><div class="card"><canvas id="cumCanvas"></canvas></div>`;
 
-  // 期間別損益(日/月/年 切替)
-  const periodKey=(t)=>{
-    const d=t.closeT.slice(0,10);
-    if(!d)return "不明";
-    if(tradePeriod==="day")return d;
-    if(tradePeriod==="month")return d.slice(0,7);
-    return d.slice(0,4);
-  };
+  // ===== 期間別(日/月/年) =====
+  const periodKey=(t)=>{const d=t.closeT.slice(0,10);if(!d)return"不明";if(tradePeriod==="day")return d;if(tradePeriod==="month")return d.slice(0,7);return d.slice(0,4);};
   const byPeriod={};
-  trades.forEach(t=>{const k=periodKey(t);(byPeriod[k]=byPeriod[k]||{pnl:0,n:0,w:0}); byPeriod[k].pnl+=t.pnl; byPeriod[k].n++; if(t.pnl>0)byPeriod[k].w++;});
-  const periods=Object.keys(byPeriod).sort().reverse(); // 新しい順
+  trades.forEach(t=>{const k=periodKey(t);(byPeriod[k]=byPeriod[k]||{pnl:0,n:0,w:0});byPeriod[k].pnl+=t.pnl;byPeriod[k].n++;if(t.pnl>0)byPeriod[k].w++;});
+  const periods=Object.keys(byPeriod).sort().reverse();
   const pLabel={day:"日別",month:"月別",year:"年別"};
   html+=`<div class="section-title">▶ ${pLabel[tradePeriod]}損益</div>
     <div class="seg">
       <div class="sbtn ${tradePeriod==='day'?'on':''}" data-period="day">日</div>
       <div class="sbtn ${tradePeriod==='month'?'on':''}" data-period="month">月</div>
       <div class="sbtn ${tradePeriod==='year'?'on':''}" data-period="year">年</div>
-    </div>
-    <div class="card">`;
-  periods.forEach(k=>{
-    const d=byPeriod[k], wrr=(d.w/d.n*100).toFixed(0);
+    </div><div class="card">`;
+  periods.slice(0,40).forEach(k=>{
+    const d=byPeriod[k];
     html+=`<div class="mtrow"><span class="nm mono">${k}</span>
-      <span class="mono" style="color:var(--mute)">${d.n}件 / 勝率${wrr}% / <span style="color:${col(d.pnl)};font-weight:700">${fmt(d.pnl)}</span></span></div>`;
+      <span class="mono" style="color:var(--mute)">${d.n}件 ${(d.w/d.n*100).toFixed(0)}% <span style="color:${col(d.pnl)};font-weight:700">${fmt(d.pnl)}</span></span></div>`;
   });
   html+=`</div>`;
 
-  // Buy vs Sell
+  // ===== 時間帯別(優希の朝勝ち昼負け検証) =====
+  const byHour={};
+  trades.forEach(t=>{
+    const hh=t.closeT.slice(11,13);
+    if(!hh)return;
+    const h=parseInt(hh);
+    (byHour[h]=byHour[h]||{pnl:0,n:0,w:0});byHour[h].pnl+=t.pnl;byHour[h].n++;if(t.pnl>0)byHour[h].w++;
+  });
+  const hours=Object.keys(byHour).map(Number).sort((a,b)=>a-b);
+  if(hours.length){
+    html+=`<div class="section-title">▶ 時間帯別（鬼門を探す）</div>
+      <div class="section-sub">レポート時刻基準（UTC+3表記のことが多い）</div><div class="card"><canvas id="hourCanvas"></canvas></div>`;
+    // 最悪時間帯
+    let worst=hours[0];
+    hours.forEach(h=>{if(byHour[h].pnl<byHour[worst].pnl)worst=h;});
+    if(byHour[worst].pnl<0)
+      html+=`<div class="warn">⚠ <b>${worst}時台が最悪</b>（${fmt(byHour[worst].pnl)} / ${byHour[worst].n}件）。この時間帯は手を出さない、ロットを落とす、などのルールを検討。</div>`;
+  }
+
+  // ===== 連敗分析(リベンジ防止) =====
+  const sorted=[...trades].sort((a,b)=>(a.closeT<b.closeT?-1:1));
+  let maxLose=0,curLose=0,maxWin=0,curWin=0;
+  sorted.forEach(t=>{
+    if(t.pnl<0){curLose++;curWin=0;maxLose=Math.max(maxLose,curLose);}
+    else if(t.pnl>0){curWin++;curLose=0;maxWin=Math.max(maxWin,curWin);}
+  });
+  html+=`<div class="section-title">▶ 連勝・連敗</div><div class="card">
+    <div class="mtrow"><span class="nm">最大連勝</span><span class="mono dir-bull" style="font-weight:700">${maxWin}連勝</span></div>
+    <div class="mtrow"><span class="nm">最大連敗</span><span class="mono dir-bear" style="font-weight:700">${maxLose}連敗</span></div>
+    <div class="mtrow"><span class="nm">現在</span><span class="mono">${curWin>0?`<span class="dir-bull">${curWin}連勝中</span>`:curLose>0?`<span class="dir-bear">${curLose}連敗中</span>`:"—"}</span></div>`;
+  if(maxLose>=5)
+    html+=`<div class="warn" style="margin-top:8px">⚠ 最大${maxLose}連敗。連敗が続くと熱くなってロットを上げがち。<b>「○連敗したら今日は終了」のマイルールを決める</b>と、リベンジトレードでの大損を防げる。</div>`;
+  html+=`</div>`;
+
+  // ===== 日次上限ライン =====
+  html+=`<div class="section-title">▶ 日次ストップ設定</div>
+    <div class="card">
+      <div class="mtrow"><span class="nm">1日の損失上限</span>
+        <span class="mono">${dailyLimit>0?fmtP(-dailyLimit):'<span style="color:var(--mute)">未設定</span>'} <span class="tbtn" id="setLimit" style="margin-left:6px;padding:2px 8px">設定</span></span></div>`;
+  if(dailyLimit>0){
+    const overDays=days.filter(d=>byDay[d]<=-dailyLimit);
+    html+=`<div style="font-size:11.5px;margin-top:6px">これまで上限を超えた日: <b style="color:var(--bear)">${overDays.length}日</b>${overDays.length?` (${overDays.slice(-3).join(", ")}${overDays.length>3?" 他":""})`:""}</div>
+      <div style="font-size:10.5px;color:var(--mute);margin-top:4px">※毎日この額に達したら強制終了するルールにすると、ドカ負けの日を物理的に減らせる</div>`;
+  }else{
+    html+=`<div style="font-size:11px;color:var(--mute);margin-top:6px">1日の損失上限を決めておくと、超えた日数を可視化できます。</div>`;
+  }
+  html+=`</div>`;
+
+  // ===== ロット規律(基準超えを突きつける) =====
+  html+=`<div class="section-title">▶ ロット規律</div>
+    <div class="card">
+      <div class="mtrow"><span class="nm">基準ロット（普段の上限）</span>
+        <span class="mono">${baseLot>0?baseLot:'<span style="color:var(--mute)">未設定</span>'} <span class="tbtn" id="setBaseLot" style="margin-left:6px;padding:2px 8px">設定</span></span></div>`;
+  if(baseLot>0){
+    const over=trades.filter(t=>t.lot>baseLot);
+    const overPnl=over.reduce((s,t)=>s+t.pnl,0);
+    const within=trades.filter(t=>t.lot<=baseLot);
+    const withinPnl=within.reduce((s,t)=>s+t.pnl,0);
+    html+=`<div class="mtrow"><span class="nm">基準内（${baseLot}以下）</span>
+      <span class="mono">${within.length}件 <span style="color:${col(withinPnl)};font-weight:700">${fmt(withinPnl)}</span></span></div>
+      <div class="mtrow"><span class="nm" style="color:var(--bear)">基準超え（${baseLot}超）</span>
+      <span class="mono">${over.length}件 <span style="color:${col(overPnl)};font-weight:800">${fmt(overPnl)}</span></span></div>`;
+    if(over.length&&overPnl<0&&withinPnl>=0){
+      html+=`<div class="warn" style="margin-top:8px">⚠ <b>基準内は ${fmt(withinPnl)}、基準超えは ${fmt(overPnl)}</b>。<br>規律を守れている時は勝てている。ロットを上げた瞬間だけ壊れている。<b>これが全て。</b></div>`;
+    }
+    // 超過した日のリスト
+    const overDays={};
+    over.forEach(t=>{const d=t.closeT.slice(0,10);(overDays[d]=overDays[d]||{n:0,pnl:0}).n++;overDays[d].pnl+=t.pnl;});
+    const odKeys=Object.keys(overDays).sort().reverse().slice(0,10);
+    if(odKeys.length){
+      html+=`<div style="font-size:11px;color:var(--mute);margin-top:8px;margin-bottom:4px">基準超えがあった日:</div>`;
+      odKeys.forEach(d=>{
+        html+=`<div class="mtrow" style="padding:7px 2px"><span class="nm mono" style="font-weight:400">${d}</span>
+          <span class="mono" style="color:var(--mute)">${overDays[d].n}件 <span style="color:${col(overDays[d].pnl)};font-weight:700">${fmt(overDays[d].pnl)}</span></span></div>`;
+      });
+    }
+  }else{
+    html+=`<div style="font-size:11px;color:var(--mute);margin-top:6px">普段のロット上限を設定すると、それを超えた取引だけの損益を突きつけます。<br>データ上 0.05以下は勝てていて、0.1で大きく負けています。</div>`;
+  }
+  html+=`</div>`;
+
+  // ===== ナンピン検出 =====
+  const byClose={};
+  trades.forEach(t=>{if(!t.closeT)return;const k=t.side+"|"+t.closeT;(byClose[k]=byClose[k]||[]).push(t);});
+  const np=Object.values(byClose).map(v=>({v,lot:v.reduce((s,t)=>s+t.lot,0),pnl:v.reduce((s,t)=>s+t.pnl,0)}))
+    .filter(g=>g.v.length>=3 && g.lot>(baseLot>0?baseLot*2:0.1));
+  html+=`<div class="section-title">▶ ナンピン検出</div>
+    <div class="section-sub">同方向を3玉以上、同時に決済した群（増し玉の疑い）</div><div class="card">`;
+  if(!np.length){
+    html+=`<div class="status">検出なし。増し玉せず捌けています。</div>`;
+  }else{
+    const npCount=np.reduce((s,g)=>s+g.v.length,0);
+    const npPnl=np.reduce((s,g)=>s+g.pnl,0);
+    const npLose=np.filter(g=>g.pnl<0);
+    const npLosePnl=npLose.reduce((s,g)=>s+g.pnl,0);
+    html+=`<div class="mtrow"><span class="nm">ナンピン群</span><span class="mono">${np.length}回 / ${npCount}玉</span></div>
+      <div class="mtrow"><span class="nm">合計損益</span><span class="mono" style="color:${col(npPnl)};font-weight:800">${fmt(npPnl)}</span></div>
+      <div class="mtrow"><span class="nm" style="color:var(--bear)">ハマった時(損失群)</span><span class="mono" style="color:var(--bear);font-weight:800">${fmt(npLosePnl)}</span></div>`;
+    // 最悪TOP3
+    const worst=[...np].sort((a,b)=>a.pnl-b.pnl).slice(0,3);
+    html+=`<div style="font-size:11px;color:var(--mute);margin-top:8px;margin-bottom:4px">特にひどかったナンピン:</div>`;
+    worst.forEach(g=>{
+      const t0=g.v[0];
+      html+=`<div class="mtrow" style="padding:7px 2px"><span class="nm mono" style="font-weight:400">${t0.closeT.slice(5,16)} ${t0.side}</span>
+        <span class="mono">${g.v.length}玉(計${g.lot.toFixed(2)}) <span style="color:${col(g.pnl)};font-weight:700">${fmt(g.pnl)}</span></span></div>`;
+    });
+    if(npLosePnl<0)
+      html+=`<div class="warn" style="margin-top:8px">⚠ ナンピンがハマった時の損失 <b>${fmt(npLosePnl)}</b>。1発の損切りなら数千円で済んだはずの損失を、増し玉で何十倍にしている。<b>ナンピン禁止を徹底すれば、この赤字はほぼ消える。</b></div>`;
+  }
+  html+=`</div>`;
+
+  // ===== Buy/Sell =====
+  const bySide={};
+  ["Buy","Sell"].forEach(s=>{const a=trades.filter(t=>t.side===s);if(!a.length)return;bySide[s]={n:a.length,pnl:a.reduce((x,t)=>x+t.pnl,0),wr:a.filter(t=>t.pnl>0).length/a.length*100};});
   html+=`<div class="section-title">▶ Buy / Sell 別</div><div class="card">`;
   ["Buy","Sell"].forEach(s=>{
-    if(!bySide[s])return;
-    const d=bySide[s];
+    if(!bySide[s])return;const d=bySide[s];
     html+=`<div class="mtrow"><span class="nm ${s==='Buy'?'dir-bull':'dir-bear'}">${s==='Buy'?'▲ Buy(買い)':'▼ Sell(売り)'}</span>
-      <span class="mono" style="color:var(--mute)">${d.n}件 / 勝率${d.wr.toFixed(0)}% / <span style="color:${col(d.pnl)};font-weight:700">${fmt(d.pnl)}</span></span></div>`;
+      <span class="mono" style="color:var(--mute)">${d.n}件 ${d.wr.toFixed(0)}% <span style="color:${col(d.pnl)};font-weight:700">${fmt(d.pnl)}</span></span></div>`;
   });
   html+=`</div>`;
 
-  // ロット別
+  // ===== ロット別 =====
+  const byLot={};
+  trades.forEach(t=>{(byLot[t.lot]=byLot[t.lot]||{n:0,pnl:0}).n++,byLot[t.lot].pnl+=t.pnl;});
   html+=`<div class="section-title">▶ ロット別（リスクの源泉）</div><div class="card">`;
   Object.keys(byLot).map(Number).sort((a,b)=>a-b).forEach(l=>{
     const d=byLot[l];
     html+=`<div class="mtrow"><span class="nm mono">${l} ロット</span>
-      <span class="mono" style="color:var(--mute)">${d.n}件 / <span style="color:${col(d.pnl)};font-weight:700">${fmt(d.pnl)}</span></span></div>`;
+      <span class="mono" style="color:var(--mute)">${d.n}件 <span style="color:${col(d.pnl)};font-weight:700">${fmt(d.pnl)}</span></span></div>`;
   });
   html+=`</div>`;
 
-  // 自動コメント(優希の弱点に直撃)
+  // ===== 自動コメント =====
   const lots=Object.keys(byLot).map(Number).sort((a,b)=>a-b);
   if(lots.length>=2){
     const big=lots[lots.length-1], small=lots[0];
-    if(byLot[big].pnl<0 && byLot[small].pnl>byLot[big].pnl){
-      html+=`<div class="warn">⚠ <b>ロット ${big} が損失の主因</b>（${fmt(byLot[big].pnl)}）。一方 ${small} は ${fmt(byLot[small].pnl)}。ロットを上げた時に損失が集中する傾向。<b>小ロットで回せている時の規律を、ロットを上げた瞬間に失っていないか</b>を確認。</div>`;
-    }
+    if(byLot[big].pnl<0 && byLot[small].pnl>byLot[big].pnl)
+      html+=`<div class="warn">⚠ <b>ロット ${big} が損失の主因</b>（${fmt(byLot[big].pnl)}）。一方 ${small} は ${fmt(byLot[small].pnl)}。ロットを上げた瞬間に規律を失っていないか。</div>`;
   }
   if(bySide.Buy&&bySide.Sell){
-    const weak=bySide.Buy.pnl<bySide.Sell.pnl?"Buy":"Sell";
-    const wd=bySide[weak];
-    if(wd.pnl<0)
-      html+=`<div class="warn">⚠ この期間は <b>${weak} 側が ${fmt(wd.pnl)}</b> と足を引っ張っている（勝率 ${wd.wr.toFixed(0)}% でも負け＝<b>損大利小</b>）。${weak} の損切りを早める / エントリー根拠を厳しくする余地。</div>`;
+    const weak=bySide.Buy.pnl<bySide.Sell.pnl?"Buy":"Sell";const wd=bySide[weak];
+    if(wd.pnl<0)html+=`<div class="warn">⚠ <b>${weak}側が ${fmt(wd.pnl)}</b>（勝率 ${wd.wr.toFixed(0)}%でも負け＝損大利小）。損切りを早める余地。</div>`;
   }
   if(rrr<1 && wr>50)
-    html+=`<div class="warn">⚠ <b>勝率${wr.toFixed(0)}%なのにRRR ${rrr.toFixed(2)}</b>。勝ってるのにトータルで負ける典型。利確を伸ばす/損切りを縮める＝RRR改善が最優先レバー。</div>`;
+    html+=`<div class="warn">⚠ <b>勝率${wr.toFixed(0)}%なのにRRR ${rrr.toFixed(2)}</b>。勝ってるのに負ける典型。RRR改善が最優先。</div>`;
   if(rrr>=1.5)
-    html+=`<div class="good">✓ RRR ${rrr.toFixed(2)} は良好。この損益比を保てている限り、多少勝率が落ちても資金は増える方向。</div>`;
+    html+=`<div class="good">✓ RRR ${rrr.toFixed(2)}は良好。この比率なら勝率が落ちても資金は増える方向。</div>`;
 
   el.innerHTML=html;
 
-  // 累積チャート描画
+  // 描画
   const cv=document.getElementById("cumCanvas");
   if(cv&&cumArr.length)drawCumChart(cv,days,cumArr);
+  const hc=document.getElementById("hourCanvas");
+  if(hc&&hours.length)drawHourChart(hc,hours,byHour);
 
-  // 期間切替ボタン
-  el.querySelectorAll(".seg .sbtn").forEach(b=>{
-    b.addEventListener("click",()=>{
-      tradePeriod=b.dataset.period;
-      localStorage.setItem("tradePeriod",tradePeriod);
-      renderTrades();
-    });
+  // ボタン
+  el.querySelectorAll(".seg .sbtn").forEach(b=>b.addEventListener("click",()=>{
+    tradePeriod=b.dataset.period;localStorage.setItem("tradePeriod",tradePeriod);renderTrades();
+  }));
+  const sd=document.getElementById("setDeposit");
+  if(sd)sd.addEventListener("click",()=>{
+    const v=prompt("これまでの累計入金額（自分が出した金額の合計）を円で入力。\nボーナス分は除いて、実際に振り込んだ額。",deposit||"");
+    if(v===null)return;const n=parseFloat(String(v).replace(/[,，]/g,""));
+    if(!isNaN(n)){deposit=n;localStorage.setItem("deposit",n);renderTrades();}
   });
+  const sbl=document.getElementById("setBaseLot");
+  if(sbl)sbl.addEventListener("click",()=>{
+    const v=prompt("普段の上限ロットを入力（例: 0.05）。\nこれを超えた取引が「規律違反」として集計されます。",baseLot||"0.05");
+    if(v===null)return;const n=parseFloat(String(v).replace(/[,，]/g,""));
+    if(!isNaN(n)&&n>0){baseLot=n;localStorage.setItem("baseLot",n);renderTrades();}
+  });
+  const sl=document.getElementById("setLimit");
+  if(sl)sl.addEventListener("click",()=>{
+    const v=prompt("1日の損失上限を円で入力（プラスの数字でOK。例: 30000）。\n空欄で解除。",dailyLimit||"");
+    if(v===null)return;const n=parseFloat(String(v).replace(/[,，]/g,""));
+    if(v.trim()===""){dailyLimit=0;localStorage.removeItem("dailyLimit");}
+    else if(!isNaN(n)){dailyLimit=Math.abs(n);localStorage.setItem("dailyLimit",dailyLimit);}
+    renderTrades();
+  });
+}
+
+function drawHourChart(canvas,hours,byHour){
+  const W=660,H=200,padB=24,padT=14;
+  canvas.width=W;canvas.height=H;canvas.style.width="100%";
+  const ctx=canvas.getContext("2d");
+  ctx.fillStyle="#0D111C";ctx.fillRect(0,0,W,H);
+  const vals=hours.map(h=>byHour[h].pnl);
+  const lo=Math.min(0,...vals),hi=Math.max(0,...vals),range=(hi-lo)||1;
+  const bw=(W-20)/hours.length;
+  const zeroY=padT+(hi/range)*(H-padT-padB);
+  ctx.strokeStyle="rgba(255,255,255,0.15)";ctx.beginPath();ctx.moveTo(0,zeroY);ctx.lineTo(W,zeroY);ctx.stroke();
+  hours.forEach((h,i)=>{
+    const v=byHour[h].pnl;
+    const x=10+i*bw;
+    const barH=Math.abs(v)/range*(H-padT-padB);
+    const y=v>=0?zeroY-barH:zeroY;
+    ctx.fillStyle=v>=0?"#26A69A":"#EF5350";
+    ctx.fillRect(x+bw*0.15,y,bw*0.7,Math.max(1,barH));
+    if(i%2===0||hours.length<=12){
+      ctx.fillStyle="#8B93A7";ctx.font="9px monospace";
+      ctx.fillText(h,x+bw*0.2,H-8);
+    }
+  });
+  ctx.fillStyle="#8B93A7";ctx.font="9px monospace";ctx.fillText("時",W-16,H-8);
 }
 
 function drawCumChart(canvas,labels,data){
