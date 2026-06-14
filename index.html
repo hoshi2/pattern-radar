@@ -217,6 +217,23 @@
 
   <!-- ===== 実トレード分析 ===== -->
   <div class="page" id="page-mytrades">
+    <div class="section-title">▶ クラウド同期</div>
+    <div class="section-sub">PCと携帯で同じデータに。Supabaseに保存して両方から読み書き</div>
+    <div class="card">
+      <div id="syncStatus" style="font-size:12px;margin-bottom:10px;text-align:center;color:var(--mute)">未接続</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" id="syncUpBtn" style="margin-top:0;flex:1">☁⬆ アップロード</button>
+        <button class="btn-primary" id="syncDownBtn" style="margin-top:0;flex:1;background:var(--bull);color:#fff">☁⬇ ダウンロード</button>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <span class="tbtn" id="syncSetupBtn" style="flex:1;text-align:center">⚙ 接続設定</span>
+        <label style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="autoSyncChk"> 自動同期
+        </label>
+      </div>
+      <div id="syncMsg" style="font-size:11px;color:var(--mute);margin-top:8px;text-align:center;line-height:1.6"></div>
+    </div>
+
     <div class="section-title">▶ データのバックアップ</div>
     <div class="section-sub">全データ(トレード・配信ログ・設定)を1ファイルに。機種変や端末またぎ用</div>
     <div class="card">
@@ -1507,6 +1524,8 @@ async function importFiles(files){
   }
   msg.innerHTML=`✓ 新規 ${added}件 追加 / 重複 ${dup}件スキップ${err?` / 失敗 ${err}件`:""}<br>累計 ${trades.length}件${extra}`;
   renderTrades();
+  // 自動同期オンなら即アップロード
+  if(localStorage.getItem("autoSync")==="1"){const u=localStorage.getItem("sbUrl"),k=localStorage.getItem("sbKey");if(u&&k&&typeof cloudUpload==="function")cloudUpload(true);}
 }
 
 function renderTrades(){
@@ -2104,6 +2123,135 @@ document.getElementById("restoreFile").addEventListener("change",async e=>{
     document.getElementById("backupMsg").innerHTML=`<span style="color:var(--bear)">復元失敗: ${err.message}</span>`;
   }
 });
+
+/* ================= クラウド同期 (Supabase) ================= */
+const SYNC_ROW_ID="main"; // 単一ユーザー想定
+function syncCfg(){
+  return {url:localStorage.getItem("sbUrl")||"", key:localStorage.getItem("sbKey")||""};
+}
+function buildStore(){
+  const store={};
+  BACKUP_KEYS.forEach(k=>{const v=localStorage.getItem(k);if(v!=null)store[k]=v;});
+  return store;
+}
+// バックアップ復元と同じマージ処理(ファイルでもクラウドでも共通)
+function mergeStore(incoming){
+  let merged={trades:0,sigs:0};
+  if(incoming.trades){
+    const inc=JSON.parse(incoming.trades);
+    const seen=new Set(trades.map(t=>t.id));
+    inc.forEach(t=>{if(!seen.has(t.id)){seen.add(t.id);trades.push(t);merged.trades++;}});
+    saveTrades();
+  }
+  if(incoming.sigLogs){
+    const inc=JSON.parse(incoming.sigLogs);
+    const seen=new Set(sigLogs.map(r=>r.id));
+    inc.forEach(r=>{if(!seen.has(r.id)){seen.add(r.id);sigLogs.push(r);merged.sigs++;}});
+    localStorage.setItem("sigLogs",JSON.stringify(sigLogs));
+  }
+  ["deposit","baseLot","dailyLimit","tradePeriod","soundOn","collapsed"].forEach(k=>{
+    if(incoming[k]!=null)localStorage.setItem(k,incoming[k]);
+  });
+  deposit=parseFloat(localStorage.getItem("deposit")||"0");
+  baseLot=parseFloat(localStorage.getItem("baseLot")||"0");
+  dailyLimit=parseFloat(localStorage.getItem("dailyLimit")||"0");
+  return merged;
+}
+function setSyncStatus(){
+  const {url,key}=syncCfg();
+  const el=document.getElementById("syncStatus");
+  if(!el)return;
+  if(url&&key){
+    const host=url.replace("https://","").split(".")[0];
+    el.innerHTML=`<span style="color:var(--bull)">● 接続済み</span> <span style="color:var(--mute)">(${host})</span>`;
+  }else{
+    el.innerHTML=`<span style="color:var(--mute)">未接続（⚙接続設定から登録）</span>`;
+  }
+}
+async function sbRequest(method, body){
+  const {url,key}=syncCfg();
+  if(!url||!key)throw new Error("接続設定が未登録です");
+  const endpoint=`${url}/rest/v1/xau_data`;
+  const headers={"apikey":key,"Authorization":`Bearer ${key}`,"Content-Type":"application/json"};
+  if(method==="GET"){
+    const r=await fetch(`${endpoint}?id=eq.${SYNC_ROW_ID}&select=payload`,{headers});
+    if(!r.ok)throw new Error(`取得エラー ${r.status}`);
+    const j=await r.json();
+    return j.length?j[0].payload:null;
+  }
+  if(method==="UPSERT"){
+    headers["Prefer"]="resolution=merge-duplicates";
+    const r=await fetch(endpoint,{method:"POST",headers,body:JSON.stringify([{id:SYNC_ROW_ID,payload:body,updated_at:new Date().toISOString()}])});
+    if(!r.ok){const t=await r.text();throw new Error(`保存エラー ${r.status}: ${t.slice(0,80)}`);}
+    return true;
+  }
+}
+let syncing=false;
+async function cloudUpload(silent){
+  if(syncing)return; syncing=true;
+  const msg=document.getElementById("syncMsg");
+  try{
+    // 先にサーバーの内容とマージしてからアップ(他端末の更新を消さないため)
+    let remote=null;
+    try{remote=await sbRequest("GET");}catch(e){}
+    if(remote&&remote.store)mergeStore(remote.store);
+    const payload={v:3, updatedAt:new Date().toISOString(), store:buildStore()};
+    await sbRequest("UPSERT",payload);
+    if(!silent&&msg)msg.innerHTML=`✓ アップロード完了（トレード${trades.length}件 / 配信${sigLogs.length}件）`;
+    if(silent&&msg)msg.innerHTML=`<span style="color:var(--mute)">自動同期: 保存済 ${new Date().toLocaleTimeString()}</span>`;
+    renderTrades();
+  }catch(err){
+    if(msg)msg.innerHTML=`<span style="color:var(--bear)">アップロード失敗: ${err.message}</span>`;
+  }finally{syncing=false;}
+}
+async function cloudDownload(){
+  if(syncing)return; syncing=true;
+  const msg=document.getElementById("syncMsg");
+  try{
+    const remote=await sbRequest("GET");
+    if(!remote||!remote.store){if(msg)msg.innerHTML=`<span style="color:var(--mute)">クラウドにデータがまだありません。先にアップロードを。</span>`;syncing=false;return;}
+    const merged=mergeStore(remote.store);
+    if(msg)msg.innerHTML=`✓ ダウンロード完了（新規トレード${merged.trades}件 / 新規配信${merged.sigs}件）`;
+    renderTrades();
+  }catch(err){
+    if(msg)msg.innerHTML=`<span style="color:var(--bear)">ダウンロード失敗: ${err.message}</span>`;
+  }finally{syncing=false;}
+}
+// 接続設定
+document.getElementById("syncSetupBtn").addEventListener("click",()=>{
+  const curUrl=localStorage.getItem("sbUrl")||"";
+  const url=prompt("Supabase Project URL を入力\n例: https://xxxx.supabase.co",curUrl);
+  if(url===null)return;
+  const curKey=localStorage.getItem("sbKey")||"";
+  const key=prompt("Supabase anon public キーを入力（eyJ... で始まる長い文字列）",curKey);
+  if(key===null)return;
+  if(url.trim())localStorage.setItem("sbUrl",url.trim());
+  if(key.trim())localStorage.setItem("sbKey",key.trim());
+  setSyncStatus();
+  document.getElementById("syncMsg").innerHTML=`✓ 接続情報を保存しました。「☁⬆アップロード」でクラウドに保存できます。`;
+});
+document.getElementById("syncUpBtn").addEventListener("click",()=>cloudUpload(false));
+document.getElementById("syncDownBtn").addEventListener("click",()=>cloudDownload());
+// 自動同期
+let autoSyncTimer=null;
+function applyAutoSync(){
+  const on=localStorage.getItem("autoSync")==="1";
+  document.getElementById("autoSyncChk").checked=on;
+  if(autoSyncTimer){clearInterval(autoSyncTimer);autoSyncTimer=null;}
+  if(on){autoSyncTimer=setInterval(()=>{const{url,key}=syncCfg();if(url&&key)cloudUpload(true);},120000);}
+}
+document.getElementById("autoSyncChk").addEventListener("change",e=>{
+  localStorage.setItem("autoSync",e.target.checked?"1":"0");
+  applyAutoSync();
+  if(e.target.checked)cloudUpload(true);
+});
+setSyncStatus();
+applyAutoSync();
+// 起動時、接続済みなら自動でダウンロード(最新を取得)
+(function(){
+  const {url,key}=syncCfg();
+  if(url&&key)setTimeout(()=>cloudDownload(),800);
+})();
 
 /* ================= TradingView 本物チャート ================= */
 let tvWidget=null;
