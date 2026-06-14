@@ -11,6 +11,7 @@
 <link rel="icon" href="icon.png">
 <title>XAU | Pattern Radar</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://s3.tradingview.com/tv.js"></script>
 <style>
   :root{
@@ -1407,6 +1408,8 @@ document.getElementById("sigSaveBtn").addEventListener("click",saveSigLog);
 let trades = JSON.parse(localStorage.getItem("trades")||"[]");
 let tradePeriod = localStorage.getItem("tradePeriod")||"day";
 let deposit = parseFloat(localStorage.getItem("deposit")||"0");
+let fundDeposit = parseFloat(localStorage.getItem("fundDeposit")||"0");
+let fundWithdraw = parseFloat(localStorage.getItem("fundWithdraw")||"0");
 let dailyLimit = parseFloat(localStorage.getItem("dailyLimit")||"0");
 let baseLot = parseFloat(localStorage.getItem("baseLot")||"0");
 
@@ -1495,6 +1498,55 @@ async function parseFile(file){
   return rows.map(normalizeRow).filter(Boolean);
 }
 
+async function readFundPdf(file){
+  const msg=document.getElementById("fundMsg");
+  msg.innerHTML="読み込み中…";
+  try{
+    if(typeof pdfjsLib==="undefined"&&typeof window.pdfjsLib==="undefined")throw new Error("PDF読み込みライブラリ未ロード。再読み込みしてください");
+    const lib=window.pdfjsLib||pdfjsLib;
+    lib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    const buf=await file.arrayBuffer();
+    const pdf=await lib.getDocument({data:buf}).promise;
+    let text="";
+    for(let i=1;i<=pdf.numPages;i++){
+      const page=await pdf.getPage(i);
+      const c=await page.getTextContent();
+      text+=c.items.map(it=>it.str).join(" ")+"\n";
+    }
+    // Account Summary を優先で読む
+    const dep=text.match(/Deposit:\s*([\d,]+\.?\d*)/i);
+    const wd=text.match(/Withdrawal:\s*([\d,]+\.?\d*)/i);
+    if(dep&&wd){
+      fundDeposit=parseFloat(dep[1].replace(/,/g,""));
+      fundWithdraw=parseFloat(wd[1].replace(/,/g,""));
+      localStorage.setItem("fundDeposit",fundDeposit);
+      localStorage.setItem("fundWithdraw",fundWithdraw);
+      msg.innerHTML=`✓ 読込完了（入金 ${Math.round(fundDeposit).toLocaleString()}円 / 出金 ${Math.round(fundWithdraw).toLocaleString()}円）`;
+      renderTrades();
+      if(localStorage.getItem("autoSync")==="1"){const u=localStorage.getItem("sbUrl"),k=localStorage.getItem("sbKey");if(u&&k&&typeof cloudUpload==="function")cloudUpload(true);}
+      return;
+    }
+    // Summaryが無い場合は明細を集計(Successfulのみ)
+    let depSum=0, wdSum=0, mode="";
+    text.split(/\n| (?=\d{4}-\d{2}-\d{2})/).forEach(line=>{
+      if(/DEPOSIT/i.test(line))mode="dep";
+      if(/WITHDRAW/i.test(line))mode="wd";
+      const m=line.match(/([\d,]+\.\d{2})\s+Successful/i);
+      if(m){const amt=parseFloat(m[1].replace(/,/g,""));if(mode==="dep")depSum+=amt;else if(mode==="wd")wdSum+=amt;}
+    });
+    if(depSum>0||wdSum>0){
+      fundDeposit=depSum;fundWithdraw=wdSum;
+      localStorage.setItem("fundDeposit",fundDeposit);localStorage.setItem("fundWithdraw",fundWithdraw);
+      msg.innerHTML=`✓ 読込完了（入金 ${Math.round(depSum).toLocaleString()}円 / 出金 ${Math.round(wdSum).toLocaleString()}円）`;
+      renderTrades();
+      return;
+    }
+    throw new Error("入出金データが見つかりませんでした。Vantageの取引履歴明細書PDFか確認してください");
+  }catch(err){
+    msg.innerHTML=`<span style="color:var(--bear)">読込失敗: ${err.message}</span>`;
+  }
+}
+
 async function importFiles(files){
   const msg=document.getElementById("importMsg");
   msg.textContent="読み込み中…";
@@ -1560,16 +1612,27 @@ function renderTrades(){
 
   // ===== 実質収支(ボーナス分離) =====
   html+=`<div class="section-title">▶ 実質収支（自分の資金）</div>
+    <div class="section-sub">Vantageの入出金履歴PDFを読み込むと自動計算</div>
     <div class="card">
-      <div class="mtrow"><span class="nm">入金額（手入力）</span>
-        <span class="mono">${deposit>0?fmtP(deposit):'<span style="color:var(--mute)">未設定</span>'} <span class="tbtn" id="setDeposit" style="margin-left:6px;padding:2px 8px">設定</span></span></div>`;
-  if(deposit>0){
-    const real=deposit+tot;
-    html+=`<div class="mtrow"><span class="nm">取引損益</span><span class="mono" style="color:${col(tot)};font-weight:700">${fmt(tot)}</span></div>
-      <div class="mtrow"><span class="nm" style="font-weight:800">実質の手残り</span><span class="mono" style="color:${col(real)};font-weight:800;font-size:14px">${fmtP(real)}</span></div>
-      <div style="font-size:10.5px;color:var(--mute);margin-top:6px">※ボーナス(クレジット)は含まない、自分が出した資金ベースの増減</div>`;
+      <input type="file" id="fundPdf" accept=".pdf" style="display:none">
+      <button class="btn-primary" id="fundPdfBtn" style="margin-top:0">📄 入出金履歴PDFを読み込む</button>
+      <div id="fundMsg" style="font-size:11.5px;color:var(--mute);margin-top:8px;text-align:center"></div>`;
+  if(fundDeposit>0||fundWithdraw>0){
+    const net=fundDeposit-fundWithdraw;
+    const real=net+tot;
+    html+=`<div class="mtrow" style="margin-top:8px"><span class="nm">入金 合計</span><span class="mono">${fmtP(fundDeposit)}</span></div>
+      <div class="mtrow"><span class="nm">出金 合計</span><span class="mono">${fmtP(fundWithdraw)}</span></div>
+      <div class="mtrow"><span class="nm" style="font-weight:700">純投入（入金−出金）</span><span class="mono" style="font-weight:700">${fmtP(net)}</span></div>
+      <div class="mtrow"><span class="nm">取引損益</span><span class="mono" style="color:${col(tot)};font-weight:700">${fmt(tot)}</span></div>
+      <div class="mtrow"><span class="nm" style="font-weight:800;font-size:14px">実質の手残り</span><span class="mono" style="color:${col(real)};font-weight:800;font-size:15px">${fmtP(real)}</span></div>`;
+    if(real<0){
+      html+=`<div class="warn" style="margin-top:8px">⚠ <b>純投入 ${fmtP(net)} を超えて損失が出ている状態</b>（実質 ${fmtP(real)}）。<br>ボーナスで口座残高は多く見えても、自分の資金ベースではマイナス。これ以上の入金は、傷を深くするリスク。</div>`;
+    }else{
+      const pct=net>0?(real/net*100):0;
+      html+=`<div style="font-size:11px;color:var(--mute);margin-top:8px">自分の資金の ${pct.toFixed(0)}% が残っている状態（ボーナス除く）。</div>`;
+    }
   }else{
-    html+=`<div style="font-size:11px;color:var(--mute);margin-top:6px">入金額を設定すると、ボーナスを除いた「自分の資金が増減したか」が分かります。</div>`;
+    html+=`<div style="font-size:11px;color:var(--mute);margin-top:8px">入出金履歴PDF（Vantageの取引履歴明細書）を読み込むと、入金・出金・純投入・実質の手残りを自動で計算します。</div>`;
   }
   html+=`</div>`;
 
@@ -1760,11 +1823,12 @@ function renderTrades(){
   el.querySelectorAll(".seg .sbtn").forEach(b=>b.addEventListener("click",()=>{
     tradePeriod=b.dataset.period;localStorage.setItem("tradePeriod",tradePeriod);renderTrades();
   }));
-  const sd=document.getElementById("setDeposit");
-  if(sd)sd.addEventListener("click",()=>{
-    const v=prompt("これまでの累計入金額（自分が出した金額の合計）を円で入力。\nボーナス分は除いて、実際に振り込んだ額。",deposit||"");
-    if(v===null)return;const n=parseFloat(String(v).replace(/[,，]/g,""));
-    if(!isNaN(n)){deposit=n;localStorage.setItem("deposit",n);renderTrades();}
+  const fpb=document.getElementById("fundPdfBtn");
+  if(fpb)fpb.addEventListener("click",()=>document.getElementById("fundPdf").click());
+  const fpi=document.getElementById("fundPdf");
+  if(fpi)fpi.addEventListener("change",e=>{
+    const f=e.target.files[0];e.target.value="";
+    if(f)readFundPdf(f);
   });
   const sbl=document.getElementById("setBaseLot");
   if(sbl)sbl.addEventListener("click",()=>{
@@ -2073,7 +2137,7 @@ document.getElementById("clearTradesBtn").addEventListener("click",()=>{
 });
 
 /* ================= 全データ バックアップ / 復元 ================= */
-const BACKUP_KEYS=["trades","sigLogs","deposit","baseLot","dailyLimit","tradePeriod","soundOn","collapsed","tdKey"];
+const BACKUP_KEYS=["trades","sigLogs","deposit","fundDeposit","fundWithdraw","baseLot","dailyLimit","tradePeriod","soundOn","collapsed","tdKey"];
 document.getElementById("backupAllBtn").addEventListener("click",()=>{
   const data={__yaaman__:1, version:3, exportedAt:new Date().toISOString(), store:{}};
   BACKUP_KEYS.forEach(k=>{const v=localStorage.getItem(k);if(v!=null)data.store[k]=v;});
@@ -2110,11 +2174,12 @@ document.getElementById("restoreFile").addEventListener("change",async e=>{
       localStorage.setItem("sigLogs",JSON.stringify(sigLogs));
     }
     // 設定系は値があれば上書き(現状が空の時のみ復元、を避け、常に復元)
-    ["deposit","baseLot","dailyLimit","tradePeriod","soundOn","collapsed","tdKey"].forEach(k=>{
+    ["deposit","fundDeposit","fundWithdraw","baseLot","dailyLimit","tradePeriod","soundOn","collapsed","tdKey"].forEach(k=>{
       if(incoming[k]!=null)localStorage.setItem(k,incoming[k]);
     });
-    // メモリ側の変数も更新
     deposit=parseFloat(localStorage.getItem("deposit")||"0");
+    fundDeposit=parseFloat(localStorage.getItem("fundDeposit")||"0");
+    fundWithdraw=parseFloat(localStorage.getItem("fundWithdraw")||"0");
     baseLot=parseFloat(localStorage.getItem("baseLot")||"0");
     dailyLimit=parseFloat(localStorage.getItem("dailyLimit")||"0");
     document.getElementById("backupMsg").innerHTML=`✓ 復元完了（新規トレード${merged.trades}件 / 新規配信${merged.sigs}件 追加、設定も反映）`;
@@ -2149,10 +2214,12 @@ function mergeStore(incoming){
     inc.forEach(r=>{if(!seen.has(r.id)){seen.add(r.id);sigLogs.push(r);merged.sigs++;}});
     localStorage.setItem("sigLogs",JSON.stringify(sigLogs));
   }
-  ["deposit","baseLot","dailyLimit","tradePeriod","soundOn","collapsed"].forEach(k=>{
+  ["deposit","fundDeposit","fundWithdraw","baseLot","dailyLimit","tradePeriod","soundOn","collapsed"].forEach(k=>{
     if(incoming[k]!=null)localStorage.setItem(k,incoming[k]);
   });
   deposit=parseFloat(localStorage.getItem("deposit")||"0");
+  fundDeposit=parseFloat(localStorage.getItem("fundDeposit")||"0");
+  fundWithdraw=parseFloat(localStorage.getItem("fundWithdraw")||"0");
   baseLot=parseFloat(localStorage.getItem("baseLot")||"0");
   dailyLimit=parseFloat(localStorage.getItem("dailyLimit")||"0");
   return merged;
