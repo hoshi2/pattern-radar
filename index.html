@@ -123,6 +123,20 @@ label{display:block;font-size:11px;color:var(--mute);margin:10px 0 5px;letter-sp
     <div class="msg" id="parseMsg"></div>
   </div>
   <div id="parsePreview"></div>
+
+  <h2>LINEのトーク履歴からまとめて読み込む</h2>
+  <div class="card">
+    <label>配信者の表示名（トーク履歴に出ている名前のまま）</label>
+    <input id="lineSenderIn" value="前田ロイ">
+    <label>トーク履歴ファイル（.txt）</label>
+    <div class="row">
+      <button class="btn wide" onclick="document.getElementById('lineFile').click()">📄 ファイルを選ぶ</button>
+    </div>
+    <input type="file" id="lineFile" accept=".txt" style="display:none" onchange="onLineFileSelected(this.files[0])">
+    <div class="msg" id="lineMsg"></div>
+    <div class="hint">LINEの「トーク履歴を送信」で書き出した.txtを選ぶと、配信っぽいメッセージだけを自動で見つけて一覧にする。中身を確認してからまとめて保存できる。</div>
+  </div>
+  <div id="linePreview"></div>
 </div>
 
 <!-- ============ タイムライン ============ -->
@@ -221,6 +235,23 @@ function normalize(t){
   return z2h(t).replace(/〜/g,"~").replace(/[ \t]+/g," ");
 }
 const NUM = "(\\d{3,5}(?:\\.\\d{1,3})?)";
+// 【】内のMA条件（例：1時間足20MAを上抜けた場合はロング／30分足20MA下抜けを待ってから）を
+// タイムフレーム＋期間＋方向のステージ列として抽出する。複数書かれていれば順番に満たすべき段階として扱う。
+function parseMaStages(text, dir){
+  const stages=[];
+  const re = /(\d+)(分|時間)足[^\d]{0,14}?(\d+)MA/g;
+  let m;
+  while((m=re.exec(text))){
+    const n=+m[1], unit=m[2], period=+m[3];
+    const tf = unit==="分" ? `${n}min` : (n===1?"1h":`${n}h`);
+    const windowText = text.slice(m.index, Math.min(text.length, m.index+40));
+    let type = dir==="long" ? "cross_above" : "cross_below";
+    if(/上抜け/.test(windowText)) type="cross_above";
+    else if(/下抜け/.test(windowText)) type="cross_below";
+    stages.push({ tf, period, type, label:`${n}${unit}足${period}MA${type==="cross_above"?"上抜け":"下抜け"}` });
+  }
+  return stages;
+}
 function parseRoy(text){
   const t = normalize(text);
   const lines = t.split("\n").map(l=>l.trim());
@@ -236,7 +267,7 @@ function parseRoy(text){
   starts.forEach((s,si)=>{
     const end = si+1<starts.length ? starts[si+1].i : lines.length;
     const block = lines.slice(s.i, end).join("\n");
-    const sig = { dir:s.dir, kind:"", zone:null, trigger:null, alt:null, tps:[], note:"" };
+    const sig = { dir:s.dir, kind:"", zone:null, trigger:null, approx:null, maStages:[], alt:null, tps:[], note:"" };
     // kind
     if(s.kindWord==="押し目買い") sig.kind="押し目";
     else if(s.kindWord==="戻り売り") sig.kind="戻り売り";
@@ -246,6 +277,8 @@ function parseRoy(text){
     const zr = block.match(new RegExp(NUM+"\\s*~\\s*"+NUM));
     // エントリー：条件（実体割れ/ブレイク）
     const tr = block.match(new RegExp(NUM+"\\s*ドル\\s*(実体割れ|割れ|ブレイク|抜け)"));
+    // エントリー：付近（一点、レンジでも条件文でもない場合）
+    const ap = block.match(new RegExp(NUM+"\\s*(?:ドル)?\\s*付近"));
     if(zr && (!tr || block.indexOf(zr[0]) < block.indexOf(tr[0]))){
       const a=+zr[1], b=+zr[2];
       sig.zone=[Math.min(a,b),Math.max(a,b)];
@@ -254,13 +287,17 @@ function parseRoy(text){
       if(sig.dir==="short"&&tr[2]==="ブレイク") sig.trigger.type="break_down";
       if(sig.dir==="long"&&/割れ/.test(tr[2])) sig.trigger.type="body_break_down";
       sig.kind = sig.kind || (/割れ/.test(tr[2])?"実体割れ":"ブレイク");
+    } else if(ap){
+      sig.approx = +ap[1];
     }
-    // 【】内の代替ゾーン
+    // 【】内の代替ゾーン／MA条件
     const alt = block.match(/【([^】]*)】/);
     if(alt){
       const az = alt[1].match(new RegExp(NUM+"\\s*~\\s*"+NUM));
+      const stages = parseMaStages(alt[1], s.dir);
       if(az){ const a=+az[1],b=+az[2]; sig.alt={zone:[Math.min(a,b),Math.max(a,b)], note:alt[1]}; }
       else sig.note = alt[1];
+      if(stages.length) sig.maStages = stages;
     }
     // 利確ターゲット
     const tpIdx = block.indexOf("利確");
@@ -269,7 +306,7 @@ function parseRoy(text){
       const nums = [...after.matchAll(new RegExp(NUM,"g"))].map(m=>+m[1]);
       sig.tps = [...new Set(nums)];
     }
-    if(sig.zone||sig.trigger) sigs.push(sig);
+    if(sig.zone||sig.trigger||sig.approx!=null||sig.maStages.length) sigs.push(sig);
   });
   // 無効宣言
   let invalidates=null;
@@ -305,6 +342,7 @@ function renderPreview(){
 function sigEditor(s,i){
   const zl=s.zone?s.zone[0]:"", zh=s.zone?s.zone[1]:"";
   const trig=s.trigger?s.trigger.level:"";
+  const approx=s.approx!=null?s.approx:"";
   return `<div class="sig-edit">
     <div class="head">
       <select style="flex:0 0 110px" onchange="pending.sigs[${i}].dir=this.value">
@@ -322,15 +360,18 @@ function sigEditor(s,i){
       <div><label style="margin-top:0">条件ライン（割れ/ブレイク）</label><input class="num" type="number" step="0.001" value="${trig}" onchange="setTrig(${i},this.value)"></div>
       <div><label style="margin-top:0">利確（カンマ区切り）</label><input class="num" value="${s.tps.join(", ")}" onchange="pending.sigs[${i}].tps=this.value.split(/[,、\\s]+/).map(Number).filter(Boolean)"></div>
     </div>
+    <div style="margin-top:8px"><label style="margin-top:0">付近価格（レンジ/条件ラインが無い時の目安値）</label><input class="num" type="number" step="0.001" value="${approx}" onchange="pending.sigs[${i}].approx=this.value?+this.value:null"></div>
+    ${s.maStages&&s.maStages.length?`<div class="hint">MA条件：${s.maStages.map(st=>st.label).join(" → ")}（実測して自動判定）</div>`:""}
     ${s.alt?`<div class="hint">代替：${s.alt.zone?fmtP(s.alt.zone[0])+"~"+fmtP(s.alt.zone[1]):""} ${s.alt.note||""}</div>`:""}
+    ${s.note?`<div class="hint">メモ：${s.note}</div>`:""}
   </div>`;
 }
 function setZone(i,k,v){ const s=pending.sigs[i]; if(!s.zone)s.zone=[0,0]; s.zone[k]=+v; if(!+v&&!s.zone[0]&&!s.zone[1])s.zone=null; }
 function setTrig(i,v){ const s=pending.sigs[i]; s.trigger = +v ? {level:+v, type:s.dir==="long"?"break_up":"body_break_down"} : null; }
-function addManualSig(){ pending.sigs.push({dir:"long",kind:"",zone:null,trigger:null,alt:null,tps:[],note:""}); renderPreview(); }
+function addManualSig(){ pending.sigs.push({dir:"long",kind:"",zone:null,trigger:null,approx:null,maStages:[],alt:null,tps:[],note:""}); renderPreview(); }
 function savePending(){
   if(!pending) return;
-  pending.sigs = pending.sigs.filter(s=>s.zone||s.trigger);
+  pending.sigs = pending.sigs.filter(s=>s.zone||s.trigger||s.approx!=null);
   // 無効宣言の反映：同日の該当方向の過去配信を失効
   if(pending.invalidates){
     const day = pending.ts.slice(0,10);
@@ -355,6 +396,113 @@ function setNow(){
   $("rawTime").value = new Date(d-off).toISOString().slice(0,16);
 }
 
+/* ================= LINEトーク履歴 一括インポート ================= */
+// LINEの「トーク履歴を送信」で書き出したテキストを行単位でパースする。
+// フォーマット: "YYYY/MM/DD(曜)" の日付見出し行の下に "HH:MM\t送信者\t本文" が続く。
+// 本文が複数行にわたる場合は先頭が " で始まり、次のメッセージ行が現れるまでを1通として連結する。
+function parseLineExport(raw){
+  const rawLines = raw.replace(/\r\n/g,"\n").split("\n");
+  const dateRe = /^(\d{4})\/(\d{2})\/(\d{2})\(.\)$/;
+  const msgRe = /^(\d{2}:\d{2})\t([^\t]*)\t(.*)$/;
+  const messages=[];
+  let curDate=null, cur=null;
+  const flush=()=>{
+    if(!cur) return;
+    let text = cur.lines.join("\n");
+    if(text.startsWith('"')){ text = text.slice(1); if(text.endsWith('"')) text = text.slice(0,-1); }
+    messages.push({ date:cur.date, time:cur.time, sender:cur.sender, text });
+    cur=null;
+  };
+  rawLines.forEach(raw0=>{
+    const line = raw0.replace(/\s+$/,"");
+    const dm = line.match(dateRe);
+    if(dm){ flush(); curDate = `${dm[1]}-${dm[2]}-${dm[3]}`; return; }
+    const mm = line.match(msgRe);
+    if(mm && curDate){
+      flush();
+      const [,time,sender,firstBody] = mm;
+      const startsQuoted = firstBody.startsWith('"');
+      const endsQuoted = firstBody.length>1 && firstBody.endsWith('"');
+      if(startsQuoted && !endsQuoted){ cur = { date:curDate, time, sender, lines:[firstBody] }; }
+      else{ messages.push({ date:curDate, time, sender, text: startsQuoted&&endsQuoted?firstBody.slice(1,-1):firstBody }); }
+      return;
+    }
+    if(cur) cur.lines.push(line);
+  });
+  flush();
+  return messages;
+}
+let bulkImport=null;
+// ヘッダー部分（先頭100字）に他資産名があれば除外する。本文の途中や末尾での言及（「ビットコインは後で配信」等）は無視する。
+const isOtherAsset = t => /ビットコイン|BTC ?USD|BTC\/USD|ドル円|USDJPY/i.test(t.slice(0,100));
+function onLineFileSelected(f){
+  if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{
+    try{
+      const sender = $("lineSenderIn").value.trim() || "前田ロイ";
+      const msgs = parseLineExport(r.result).filter(m=>m.sender===sender && !isOtherAsset(m.text));
+      const items=[];
+      msgs.forEach(m=>{
+        const parsed = parseRoy(m.text);
+        if(parsed.sigs.length || parsed.invalidates){
+          const ts = `${m.date}T${m.time}`;
+          const dup = logs.some(L=>L.ts===ts && L.raw===m.text);
+          items.push({ ts, raw:m.text, sigs:parsed.sigs, invalidates:parsed.invalidates, dup, include:!dup });
+        }
+      });
+      bulkImport = items;
+      $("lineMsg").innerHTML = items.length ? `✓ ${items.length}件の配信らしきメッセージを検出（ゴールド以外は除外済み）。下の一覧を確認して、雑談・振り返りっぽいものはチェックを外してから保存して。` : `<span style="color:var(--bear)">配信が見つからなかった。送信者名を確認して。</span>`;
+      renderBulkPreview();
+    }catch(e){ $("lineMsg").innerHTML = `<span style="color:var(--bear)">読み込み失敗: ${e.message}</span>`; }
+  };
+  r.readAsText(f);
+}
+function renderBulkPreview(){
+  const box=$("linePreview");
+  if(!bulkImport || !bulkImport.length){ box.innerHTML=""; return; }
+  const newCount = bulkImport.filter(x=>!x.dup).length;
+  let h = `<div class="card"><label style="margin-top:0">検出 ${bulkImport.length}件（新規 ${newCount}件 / 既存と重複 ${bulkImport.length-newCount}件）</label>`;
+  bulkImport.forEach((it,i)=>{
+    const snippet = escapeHtml(it.raw.replace(/\n+/g," ").slice(0,50));
+    h += `<div class="sigline" style="flex-direction:column;align-items:stretch;gap:4px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <input type="checkbox" style="width:auto" ${it.include?"checked":""} ${it.dup?"disabled":""} onchange="bulkImport[${i}].include=this.checked">
+        <span class="num">${it.ts.replace('T',' ')}</span>
+        ${it.invalidates?`<span class="badge kind">${it.invalidates==="short"?"ショート":"ロング"}無効</span>`:""}
+        ${it.sigs.map(s=>`<span class="badge ${s.dir}">${s.dir==="long"?"L":"S"}</span>`).join("")}
+        ${it.dup?'<span class="chip dead">重複</span>':""}
+      </div>
+      <div class="hint" style="margin-top:0">${snippet}…</div>
+    </div>`;
+  });
+  h += `<button class="btn gold wide" onclick="commitBulkImport()">選択した分をまとめて保存</button></div>`;
+  box.innerHTML = h;
+}
+function commitBulkImport(){
+  if(!bulkImport) return;
+  const picked = bulkImport.filter(x=>x.include && !x.dup).sort((a,b)=>a.ts<b.ts?-1:1);
+  if(!picked.length){ toast("保存対象がない"); return; }
+  picked.forEach(it=>{
+    const entry = { id:uid(), ts:it.ts, raw:it.raw, sigs:it.sigs, invalidates:it.invalidates, dead:{}, mod:Date.now() };
+    if(entry.invalidates){
+      const day = entry.ts.slice(0,10);
+      logs.forEach(L=>{
+        if(L.ts.slice(0,10)===day && L.ts<entry.ts){
+          L.sigs.forEach((s,i)=>{ if(s.dir===entry.invalidates) L.dead[i]=true; });
+          L.mod=Date.now();
+        }
+      });
+    }
+    logs.push(entry);
+  });
+  logs.sort((a,b)=>a.ts<b.ts?-1:1);
+  saveLogs();
+  toast(`${picked.length}件を保存した`);
+  bulkImport=null; $("linePreview").innerHTML=""; $("lineMsg").innerHTML=""; $("lineFile").value="";
+  go("timeline");
+}
+
 /* ================= タイムライン ================= */
 let statusCache = JSON.parse(localStorage.getItem("royStatus")||"{}"); // {logId: {sigIdx: label}}
 function renderTimeline(){
@@ -374,11 +522,12 @@ function renderTimeline(){
       L.sigs.forEach((s,i)=>{
         const dead=L.dead[i];
         const st = dead?'<span class="chip dead">失効</span>':(statusCache[L.id]?.[i]?statusChip(statusCache[L.id][i]):'<span class="chip wait">未判定</span>');
-        const lv = s.zone ? `${fmtP(s.zone[0])}~${fmtP(s.zone[1])}` : s.trigger ? `${fmtP(s.trigger.level)} ${s.trigger.type==="break_up"?"ブレイク":"実体割れ"}` : "";
+        const lv = s.zone ? `${fmtP(s.zone[0])}~${fmtP(s.zone[1])}` : s.trigger ? `${fmtP(s.trigger.level)} ${s.trigger.type==="break_up"?"ブレイク":"実体割れ"}` : (s.approx!=null ? `${fmtP(s.approx)} 付近` : "");
         h+=`<div class="sigline">
           <span class="badge ${s.dir}">${s.dir==="long"?"ロング↑":"ショート↓"}</span>
           ${s.kind?`<span class="badge kind">${s.kind}</span>`:""}
           <span class="lv num">${lv}</span>
+          ${s.maStages&&s.maStages.length?`<span class="tp">${s.maStages.map(x=>x.label).join("→")}</span>`:""}
           ${s.tps.length?`<span class="tp num">TP ${s.tps.map(fmtP).join("→")}</span>`:""}
           ${st}
           <button class="btn sm" style="margin-left:auto" onclick="toggleDead('${L.id}',${i})">${dead?"復活":"失効に"}</button>
@@ -407,38 +556,97 @@ function escapeHtml(s){ return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;","
 function viewDay(d){ $("chartDate").value=d; go("chart"); loadChart(); }
 
 /* ================= TwelveData ================= */
-async function fetchCandles(startISO, endISO){
+async function fetchCandles(startISO, endISO, interval="5min"){
   const key=localStorage.getItem("tdKey")||"";
   if(!key) throw new Error("TwelveData APIキーが未設定（⚙設定）");
-  const u=`https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=5min&timezone=Asia/Tokyo&start_date=${encodeURIComponent(startISO)}&end_date=${encodeURIComponent(endISO)}&outputsize=5000&apikey=${key}`;
+  const u=`https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${interval}&timezone=Asia/Tokyo&start_date=${encodeURIComponent(startISO)}&end_date=${encodeURIComponent(endISO)}&outputsize=5000&apikey=${key}`;
   const r=await fetch(u); const j=await r.json();
   if(j.status==="error") throw new Error(j.message||"取得エラー");
   if(!j.values) return [];
   return j.values.map(v=>({ time:Math.floor(Date.parse(v.datetime.replace(" ","T")+"Z")/1000), open:+v.open, high:+v.high, low:+v.low, close:+v.close })).reverse();
 }
 const tsSec = ts => Math.floor(Date.parse(ts+":00Z")/1000); // JSTの壁時計をUTC扱いで統一
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+function isoOf(sec){ const d=new Date(sec*1000); const p=n=>String(n).padStart(2,"0"); return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:00`; }
+
+/* ================= MA条件の自動判定 ================= */
+function sma(closes, period, idx){
+  if(idx<period-1) return null;
+  let sum=0; for(let i=idx-period+1;i<=idx;i++) sum+=closes[i];
+  return sum/period;
+}
+function findCross(candles, period, type, fromTime){
+  const closes = candles.map(c=>c.close);
+  for(let i=period;i<candles.length;i++){
+    if(candles[i].time<fromTime) continue;
+    const maPrev=sma(closes,period,i-1), maCur=sma(closes,period,i);
+    if(maPrev==null||maCur==null) continue;
+    const prevClose=closes[i-1], curClose=closes[i];
+    if(type==="cross_above" && prevClose<=maPrev && curClose>maCur) return candles[i].time;
+    if(type==="cross_below" && prevClose>=maPrev && curClose<maCur) return candles[i].time;
+  }
+  return null;
+}
+// stages を順番に満たすか確認する。各ステージは自分の時間足のローソクを取得してMAクロスを探す。
+// 前のステージが発動した時刻以降だけを見て、順番に成立していく想定（例：1時間足で反落→30分足で下抜け確認）。
+const candleCache = new Map();
+async function fetchCandlesCached(interval, fromSec, toSec){
+  const key = `${interval}_${fromSec}_${toSec}`;
+  if(candleCache.has(key)) return candleCache.get(key);
+  await sleep(1300); // TwelveData無料枠のレート制限対策
+  const candles = await fetchCandles(isoOf(fromSec), isoOf(toSec), interval);
+  candleCache.set(key, candles);
+  return candles;
+}
+async function evalMaStages(stages, sinceSec, untilSec){
+  let t = sinceSec;
+  const results=[];
+  for(const st of stages){
+    const candles = await fetchCandlesCached(st.tf, t, untilSec);
+    const fired = findCross(candles, st.period, st.type, t);
+    results.push({ ...st, fired: fired!=null, firedTime: fired });
+    if(fired==null) break;
+    t = fired;
+  }
+  return results;
+}
 
 /* ================= ステータス判定 ================= */
 async function refreshStatuses(){
   const targets = logs.filter(L=>L.sigs.length);
   if(!targets.length){ toast("判定する配信がない"); return; }
   $("tlMsg").innerHTML="判定中…";
+  candleCache.clear();
   try{
-    // 対象日ごとにまとめて取得
-    const days=[...new Set(targets.map(L=>L.ts.slice(0,10)))].slice(-7); // 直近7日分まで
+    const nowSec = Math.floor(Date.now()/1000);
+    const isMa = s => s.maStages && s.maStages.length;
+    // 通常シグナル（ゾーン/条件ライン/付近）：日ごとにまとめて5分足取得
+    const simpleTargets = targets.filter(L=>L.sigs.some(s=>!isMa(s)));
+    const days=[...new Set(simpleTargets.map(L=>L.ts.slice(0,10)))].slice(-14);
     for(const day of days){
-      const candles = await fetchCandles(day+" 00:00:00", day+" 23:59:59");
+      const candles = await fetchCandlesCached("5min", tsSec(day+"T00:00"), tsSec(day+"T23:59"));
       logs.filter(L=>L.ts.slice(0,10)===day).forEach(L=>{
         const after = candles.filter(c=>c.time>=tsSec(L.ts));
-        statusCache[L.id]={};
-        L.sigs.forEach((s,i)=>{ statusCache[L.id][i]=evalSig(s,after); });
+        statusCache[L.id]=statusCache[L.id]||{};
+        L.sigs.forEach((s,i)=>{ if(!isMa(s)) statusCache[L.id][i]=evalSig(s,after); });
       });
     }
+    // MA条件つきシグナル：1件ずつ、配信時刻から広い期間で段階判定
+    for(const L of targets){
+      for(let i=0;i<L.sigs.length;i++){
+        const s=L.sigs[i];
+        if(isMa(s)){
+          statusCache[L.id]=statusCache[L.id]||{};
+          statusCache[L.id][i] = await evalMaSig(s, tsSec(L.ts), nowSec);
+        }
+      }
+    }
     localStorage.setItem("royStatus",JSON.stringify(statusCache));
-    $("tlMsg").innerHTML=`✓ 判定を更新（直近${Math.min(days.length,7)}日分）`;
+    $("tlMsg").innerHTML=`✓ 判定を更新（直近${Math.min(days.length,14)}日分＋MA条件シグナル）`;
     renderTimeline();
   }catch(e){ $("tlMsg").innerHTML=`<span style="color:var(--bear)">${e.message}</span>`; }
 }
+function approxTolerance(price){ return Math.max(1.5, price*0.0015); }
 function evalSig(s,candles){
   if(!candles.length) return "データなし";
   let fired=-1;
@@ -450,6 +658,10 @@ function evalSig(s,candles){
     else if(s.trigger.type==="break_down") fired=candles.findIndex(c=>c.close<s.trigger.level);
     else fired=candles.findIndex(c=>c.close<s.trigger.level); // body_break_down
     if(fired<0) return "待機中";
+  } else if(s.approx!=null){
+    const tol=approxTolerance(s.approx);
+    fired = candles.findIndex(c=>c.low<=s.approx+tol && c.high>=s.approx-tol);
+    if(fired<0) return "待機中";
   } else return "—";
   const rest=candles.slice(fired);
   let hit=0;
@@ -457,9 +669,39 @@ function evalSig(s,candles){
     const ok = s.dir==="long" ? rest.some(c=>c.high>=tp) : rest.some(c=>c.low<=tp);
     if(ok) hit++;
   });
-  if(hit===0) return s.zone?"ゾーン到達":"発動";
+  if(hit===0) return (s.zone||s.approx!=null)?"ゾーン到達":"発動";
   if(hit>=s.tps.length&&s.tps.length) return "最終TP到達 🎯";
   return `TP${hit}到達`;
+}
+// MA条件つきシグナル：価格帯到達→MA段階クロス→TP到達、の順で広い期間を見て判定する
+async function evalMaSig(s, sinceSec, nowSec){
+  try{
+    const scanUntil = Math.min(nowSec, sinceSec + 60*60*24*14); // 最大14日先まで
+    const wide = await fetchCandlesCached("5min", sinceSec, scanUntil);
+    if(!wide.length) return "データなし";
+    let touchIdx=-1;
+    if(s.zone){ touchIdx = wide.findIndex(c=>c.low<=s.zone[1]&&c.high>=s.zone[0]); }
+    else if(s.trigger){
+      touchIdx = s.trigger.type==="break_up" ? wide.findIndex(c=>c.close>s.trigger.level) : wide.findIndex(c=>c.close<s.trigger.level);
+    } else if(s.approx!=null){
+      const tol=approxTolerance(s.approx);
+      touchIdx = wide.findIndex(c=>c.low<=s.approx+tol && c.high>=s.approx-tol);
+    }
+    if(touchIdx<0) return "待機中";
+    const touchTime = wide[touchIdx].time;
+    const stageResults = await evalMaStages(s.maStages, touchTime, scanUntil);
+    const doneCount = stageResults.filter(r=>r.fired).length;
+    if(doneCount < s.maStages.length){
+      return doneCount>0 ? `MA条件${doneCount}/${s.maStages.length}成立` : "価格帯到達（MA待ち）";
+    }
+    const condTime = stageResults[stageResults.length-1].firedTime;
+    const rest = wide.filter(c=>c.time>=condTime);
+    let hit=0;
+    s.tps.forEach(tp=>{ const ok = s.dir==="long" ? rest.some(c=>c.high>=tp) : rest.some(c=>c.low<=tp); if(ok) hit++; });
+    if(hit===0) return "条件成立・発動";
+    if(hit>=s.tps.length&&s.tps.length) return "最終TP到達 🎯";
+    return `TP${hit}到達`;
+  }catch(e){ return "判定エラー"; }
 }
 
 /* ================= チャート描画 ================= */
@@ -507,6 +749,7 @@ async function loadChart(){
           lineFrom(t0,tEnd,s.zone[1],col,2,"");
         }
         if(s.trigger) lineFrom(t0,tEnd,s.trigger.level,col,0,dead?"":(s.trigger.type==="break_up"?"ブレイク":"実体割れ"));
+        if(!s.zone&&!s.trigger&&s.approx!=null) lineFrom(t0,tEnd,s.approx,col,1,dead?"":(s.dir==="long"?"L":"S")+" 付近");
         if(s.alt&&s.alt.zone){ lineFrom(t0,tEnd,s.alt.zone[0],col,3,""); lineFrom(t0,tEnd,s.alt.zone[1],col,3,""); }
         if(!dead) s.tps.forEach((tp,k)=>lineFrom(t0,tEnd,tp,"#e0b64f",2,k===s.tps.length-1?"Lst":"TP"+(k+1)));
       });
@@ -535,6 +778,7 @@ function copyPine(id){
       p+=`f_line(${s.zone[1]}, ${col}, line.style_dashed, "${tag}ゾーン上")\n`;
     }
     if(s.trigger) p+=`f_line(${s.trigger.level}, ${col}, line.style_solid, "${s.trigger.type==="break_up"?"ブレイク":"実体割れ"}")\n`;
+    if(!s.zone&&!s.trigger&&s.approx!=null) p+=`f_line(${s.approx}, ${col}, line.style_dotted, "${tag}付近")\n`;
     if(s.alt&&s.alt.zone){ p+=`f_line(${s.alt.zone[0]}, color.new(${s.dir==="long"?"#26a69a":"#ef5350"},40), line.style_dotted, "代替下")\nf_line(${s.alt.zone[1]}, color.new(${s.dir==="long"?"#26a69a":"#ef5350"},40), line.style_dotted, "代替上")\n`; }
     s.tps.forEach((tp,k)=>{ p+=`f_line(${tp}, color.new(#e0b64f,0), line.style_dashed, "${k===s.tps.length-1?"Lst":"TP"+(k+1)}")\n`; });
   });
