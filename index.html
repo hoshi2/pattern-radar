@@ -9,6 +9,8 @@
 <link rel="icon" href="icon.svg">
 <link rel="apple-touch-icon" href="icon-180.png">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.min.js" onerror="var s=document.createElement('script');s.src='https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js';document.head.appendChild(s);"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <style>
 :root{
   --bg:#131722; --panel:#1e222d; --panel2:#171b26; --border:#2a2e39;
@@ -174,20 +176,23 @@ label{display:block;font-size:11px;color:var(--mute);margin:10px 0 5px;letter-sp
     <button class="btn wide" onclick="saveTdKey()">保存</button>
   </div>
   <div class="card">
-    <label style="margin-top:0">クラウド同期（Supabase） <span id="syncStatus"></span></label>
-    <input id="sbUrlIn" placeholder="https://xxxx.supabase.co" autocomplete="off">
-    <div style="height:8px"></div>
-    <input id="sbKeyIn" placeholder="anon key" autocomplete="off">
-    <div class="row" style="margin-top:12px">
-      <button class="btn" onclick="saveSb()">接続を保存</button>
-      <button class="btn" onclick="cloudUpload(false)">☁⬆ 今すぐ同期</button>
+    <label style="margin-top:0">クラウド保存（Firebase） <span id="syncStatus"></span></label>
+    <div id="cloudConnectedBox" style="display:none">
+      <div class="hint">同期コード: <span class="num" id="syncCodeShow"></span>（習慣アプリ・借金管理アプリと同じ端末なら気にしなくてOK。別端末でも見たい時はこのコードを控えておく）</div>
+      <div class="row">
+        <button class="btn" onclick="cloudSyncNow()">☁⬆ 今すぐ同期</button>
+        <button class="btn danger" onclick="disconnectCloud()">解除する</button>
+      </div>
     </div>
-    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--text)">
-      <input type="checkbox" id="autoSyncIn" style="width:auto" onchange="toggleAutoSync()"> 保存のたびに自動で同期する
-    </label>
+    <div id="cloudSetupBox">
+      <label style="margin-top:0">① Firebaseの設定を貼り付け</label>
+      <textarea id="fbConfigIn" style="min-height:90px" placeholder='const firebaseConfig = { apiKey: "...", projectId: "...", ... }&#10;をまるごと貼り付け'></textarea>
+      <label>② 同期コード（自分だけの合言葉・4文字以上）</label>
+      <input id="syncCodeIn" placeholder="例: roylog2026" autocomplete="off">
+      <button class="btn gold wide" onclick="connectCloudUI()">クラウド保存をオンにする</button>
+    </div>
     <div class="msg" id="syncMsg"></div>
-    <div class="hint">他のアプリ（P26 / STELLA FINANCE）と同じ端末なら接続情報は自動で引き継がれてる。テーブルは <span class="num">roy_log</span> を新規に使う（下のSQLを一度だけSupabaseで実行）。</div>
-    <div class="hint num" style="background:var(--panel2);border-radius:8px;padding:10px;margin-top:8px;user-select:all">create table roy_log (id text primary key, payload jsonb, updated_at timestamptz);<br>alter table roy_log enable row level security;<br>create policy "all" on roy_log for all using (true) with check (true);</div>
+    <div class="hint">1. console.firebase.google.com で無料プロジェクトを作成（習慣アプリ・借金管理アプリと同じプロジェクトを使い回してOK）<br>2. 左メニューの Firestore Database を作成（本番モードでOK）<br>3. プロジェクト設定→全般→マイアプリでウェブアプリを追加<br>4. 出てくる firebaseConfig をコピーして①に貼り付け</div>
   </div>
   <div class="card">
     <label style="margin-top:0">バックアップ（ファイル）</label>
@@ -216,7 +221,7 @@ const $ = id => document.getElementById(id);
 const toast = t => { const e=$("toast"); e.textContent=t; e.classList.add("show"); setTimeout(()=>e.classList.remove("show"),1800); };
 const uid = () => Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const fmtP = v => (+v).toFixed(String(v).includes(".")&&String(v).split(".")[1].length>1?2:1).replace(/\.0$/,"");
-function saveLogs(){ localStorage.setItem("royLogs", JSON.stringify(logs)); if(localStorage.getItem("autoSync")==="1") cloudUpload(true); }
+function saveLogs(){ localStorage.setItem("royLogs", JSON.stringify(logs)); if(cloudReady) cloudPushNow(true); }
 
 /* ================= ナビ ================= */
 function go(p){
@@ -556,9 +561,19 @@ function escapeHtml(s){ return s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;","
 function viewDay(d){ $("chartDate").value=d; go("chart"); loadChart(); }
 
 /* ================= TwelveData ================= */
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+// TwelveData無料枠は1分あたり8リクエストまで。チャート/判定/現在値、どの呼び出しも必ずここを通すことで
+// 呼び出し元がいくつあっても合計で間隔が空くようにする（8.5秒間隔＝1分に最大7回）。
+let lastApiCallAt = 0;
+async function apiGate(){
+  const wait = lastApiCallAt + 8500 - Date.now();
+  if(wait>0) await sleep(wait);
+  lastApiCallAt = Date.now();
+}
 async function fetchCandles(startISO, endISO, interval="5min"){
   const key=localStorage.getItem("tdKey")||"";
   if(!key) throw new Error("TwelveData APIキーが未設定（⚙設定）");
+  await apiGate();
   const u=`https://api.twelvedata.com/time_series?symbol=XAU/USD&interval=${interval}&timezone=Asia/Tokyo&start_date=${encodeURIComponent(startISO)}&end_date=${encodeURIComponent(endISO)}&outputsize=5000&apikey=${key}`;
   const r=await fetch(u); const j=await r.json();
   if(j.status==="error") throw new Error(j.message||"取得エラー");
@@ -566,7 +581,6 @@ async function fetchCandles(startISO, endISO, interval="5min"){
   return j.values.map(v=>({ time:Math.floor(Date.parse(v.datetime.replace(" ","T")+"Z")/1000), open:+v.open, high:+v.high, low:+v.low, close:+v.close })).reverse();
 }
 const tsSec = ts => Math.floor(Date.parse(ts+":00Z")/1000); // JSTの壁時計をUTC扱いで統一
-const sleep = ms => new Promise(r=>setTimeout(r,ms));
 function isoOf(sec){ const d=new Date(sec*1000); const p=n=>String(n).padStart(2,"0"); return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:00`; }
 
 /* ================= MA条件の自動判定 ================= */
@@ -593,7 +607,6 @@ const candleCache = new Map();
 async function fetchCandlesCached(interval, fromSec, toSec){
   const key = `${interval}_${fromSec}_${toSec}`;
   if(candleCache.has(key)) return candleCache.get(key);
-  await sleep(1300); // TwelveData無料枠のレート制限対策
   const candles = await fetchCandles(isoOf(fromSec), isoOf(toSec), interval);
   candleCache.set(key, candles);
   return candles;
@@ -730,7 +743,7 @@ async function loadChart(){
   const day=$("chartDate").value||todayStr();
   $("chartMsg").innerHTML="読み込み中…";
   try{
-    const candles=await fetchCandles(day+" 00:00:00", day+" 23:59:59");
+    const candles=await fetchCandlesCached("5min", tsSec(day+"T00:00"), tsSec(day+"T23:59"));
     if(!candles.length){ $("chartMsg").innerHTML="この日の足データがない（休場？）"; candleSeries.setData([]); clearOverlays(); return; }
     candleSeries.setData(candles);
     clearOverlays();
@@ -785,31 +798,49 @@ function copyPine(id){
   navigator.clipboard.writeText(p).then(()=>toast("Pineをコピーした → TradingViewのPineエディタに貼る"));
 }
 
-/* ================= クラウド同期 (Supabase / roy_log) ================= */
-function syncCfg(){ return {url:localStorage.getItem("sbUrl")||"", key:localStorage.getItem("sbKey")||""}; }
-function setSyncStatus(){
-  const {url,key}=syncCfg(); const el=$("syncStatus");
-  el.innerHTML = url&&key ? `<span style="color:var(--bull)">● 接続済み</span>` : `<span style="color:var(--mute)">未接続</span>`;
+/* ================= クラウド保存 (Firebase Firestore) ================= */
+// 習慣アプリ(p26)・借金管理アプリ(STELLA FINANCE)と同じ方式：自分のFirebaseプロジェクトの設定＋
+// 好きな「同期コード」を貼るだけで、そのコードのドキュメントにログをまるごと保存/購読する。
+function loadCloudCfg(){ try{ return JSON.parse(localStorage.getItem("royCloud")||"null"); }catch(e){ return null; } }
+function saveCloudCfg(v){ localStorage.setItem("royCloud", JSON.stringify(v)); }
+function clearCloudCfg(){ localStorage.removeItem("royCloud"); }
+function parseFirebaseConfig(text){
+  const m = String(text).match(/\{[\s\S]*\}/);
+  if(!m) throw new Error("設定が見つかりません");
+  // eslint-disable-next-line no-new-func
+  const obj = Function("return ("+m[0]+")")();
+  if(!obj || !obj.projectId) throw new Error("projectId がありません");
+  return obj;
 }
-async function sbRequest(method,body){
-  const {url,key}=syncCfg();
-  if(!url||!key) throw new Error("Supabase接続が未設定");
-  const ep=`${url}/rest/v1/roy_log`;
-  const headers={apikey:key,Authorization:`Bearer ${key}`,"Content-Type":"application/json"};
-  if(method==="GET"){
-    const r=await fetch(`${ep}?id=eq.main&select=payload`,{headers});
-    if(!r.ok) throw new Error(`取得エラー ${r.status}`);
-    const j=await r.json(); return j.length?j[0].payload:null;
-  }
-  headers["Prefer"]="resolution=merge-duplicates";
-  const r=await fetch(ep,{method:"POST",headers,body:JSON.stringify([{id:"main",payload:body,updated_at:new Date().toISOString()}])});
-  if(!r.ok){ const t=await r.text(); throw new Error(`保存エラー ${r.status}: ${t.slice(0,80)}`); }
-  return true;
+let fbDb=null, fbUnsub=null, cloudReady=false, lastPush=0;
+function connectCloud(config){
+  const app = firebase.apps.length ? firebase.app() : firebase.initializeApp(config);
+  fbDb = firebase.firestore(app);
 }
-function mergeLogs(remote){
-  if(!remote||!remote.logs) return 0;
+function cloudRef(code){ return fbDb.collection("roylog").doc(code); }
+async function cloudPull(code){
+  const snap = await cloudRef(code).get();
+  if(!snap.exists) return null;
+  const d = snap.data(); if(!d||!d.data) return null;
+  try{ return { state: JSON.parse(d.data), updatedAt: d.updatedAt||0 }; }catch(e){ return null; }
+}
+async function cloudPush(code, payload){
+  const updatedAt = Date.now();
+  await cloudRef(code).set({ data: JSON.stringify(payload), updatedAt });
+  return updatedAt;
+}
+function cloudSubscribe(code, cb){
+  if(fbUnsub){ fbUnsub(); fbUnsub=null; }
+  fbUnsub = cloudRef(code).onSnapshot(snap=>{
+    if(!snap.exists) return;
+    const d=snap.data(); if(!d||!d.data) return;
+    try{ cb({ state: JSON.parse(d.data), updatedAt: d.updatedAt||0 }); }catch(e){}
+  }, err=>console.error("cloud subscribe error", err));
+}
+function mergeLogs(remoteState){
+  if(!remoteState||!remoteState.logs) return 0;
   const byId=new Map(logs.map(L=>[L.id,L])); let added=0;
-  remote.logs.forEach(R=>{
+  remoteState.logs.forEach(R=>{
     const cur=byId.get(R.id);
     if(!cur){ logs.push(R); added++; }
     else if((R.mod||0)>(cur.mod||0)){ Object.assign(cur,R); }
@@ -818,29 +849,58 @@ function mergeLogs(remote){
   localStorage.setItem("royLogs",JSON.stringify(logs));
   return added;
 }
-let syncing=false;
-async function cloudUpload(silent){
-  if(syncing) return; syncing=true;
+function cloudOnStatus(){
+  const cfg = loadCloudCfg();
+  $("syncStatus").innerHTML = cfg&&cfg.code ? `<span style="color:var(--bull)">● 接続済み</span>` : `<span style="color:var(--mute)">未接続</span>`;
+  $("cloudConnectedBox").style.display = cfg&&cfg.code ? "block" : "none";
+  $("cloudSetupBox").style.display = cfg&&cfg.code ? "none" : "block";
+  if(cfg&&cfg.code) $("syncCodeShow").textContent = cfg.code;
+}
+async function initCloud(){
+  const cfg = loadCloudCfg();
+  if(!cfg||!cfg.config||!cfg.code) return;
   try{
-    let remote=null; try{ remote=await sbRequest("GET"); }catch(e){}
-    const added=mergeLogs(remote);
-    await sbRequest("UPSERT",{v:1,updatedAt:new Date().toISOString(),logs});
-    if(!silent){ $("syncMsg").innerHTML=`✓ 同期完了${added?`（他端末から${added}件取り込み）`:""}`; toast("同期した"); }
+    connectCloud(cfg.config);
+    const remote = await cloudPull(cfg.code);
+    if(remote && remote.state){ const added=mergeLogs(remote.state); lastPush=remote.updatedAt; if(added) renderTimeline(); }
+    else{ lastPush = await cloudPush(cfg.code, {v:1, updatedAt:new Date().toISOString(), logs}); }
+    cloudReady = true;
+    cloudSubscribe(cfg.code, ({state, updatedAt})=>{
+      if(updatedAt>lastPush){ lastPush=updatedAt; const added=mergeLogs(state); if(added) renderTimeline(); }
+    });
+  }catch(e){ console.error("cloud init", e); }
+}
+async function cloudPushNow(silent){
+  const cfg = loadCloudCfg(); if(!cfg||!cfg.code) return;
+  try{ lastPush = await cloudPush(cfg.code, {v:1, updatedAt:new Date().toISOString(), logs}); if(!silent){ $("syncMsg").innerHTML="✓ 同期した"; toast("同期した"); } }
+  catch(e){ if(!silent) $("syncMsg").innerHTML=`<span style="color:var(--bear)">${e.message}</span>`; }
+}
+async function cloudSyncNow(){
+  const cfg = loadCloudCfg(); if(!cfg||!cfg.code) return;
+  try{
+    const remote = await cloudPull(cfg.code);
+    const added = mergeLogs(remote?remote.state:null);
+    await cloudPushNow(true);
+    $("syncMsg").innerHTML = `✓ 同期完了${added?`（他端末から${added}件取り込み）`:""}`;
+    toast("同期した");
     if(added) renderTimeline();
-  }catch(e){ if(!silent) $("syncMsg").innerHTML=`<span style="color:var(--bear)">${e.message}</span>`; }
-  finally{ syncing=false; }
+  }catch(e){ $("syncMsg").innerHTML = `<span style="color:var(--bear)">${e.message}</span>`; }
 }
-async function cloudPullOnLoad(){
-  const {url,key}=syncCfg(); if(!url||!key) return;
-  try{ const remote=await sbRequest("GET"); const added=mergeLogs(remote); if(added){ toast(`クラウドから${added}件取り込み`); renderTimeline(); } }catch(e){}
+function connectCloudUI(){
+  let config;
+  try{ config = parseFirebaseConfig($("fbConfigIn").value.trim()); }
+  catch(e){ $("syncMsg").innerHTML = `<span style="color:var(--bear)">Firebaseの設定が読み取れません: ${e.message}</span>`; return; }
+  const code = $("syncCodeIn").value.trim();
+  if(code.length<4){ $("syncMsg").innerHTML = `<span style="color:var(--bear)">同期コードは4文字以上にして</span>`; return; }
+  saveCloudCfg({config, code});
+  toast("クラウド保存をオンにした。読み込み直すよ");
+  setTimeout(()=>location.reload(), 600);
 }
-function saveSb(){
-  const u=$("sbUrlIn").value.trim(), k=$("sbKeyIn").value.trim();
-  if(u) localStorage.setItem("sbUrl",u);
-  if(k) localStorage.setItem("sbKey",k);
-  setSyncStatus(); $("syncMsg").innerHTML="✓ 接続を保存した";
+function disconnectCloud(){
+  if(!confirm("クラウド保存を解除する？（この端末のデータは残る、クラウド上のデータも消えない）")) return;
+  clearCloudCfg();
+  location.reload();
 }
-function toggleAutoSync(){ localStorage.setItem("autoSync", $("autoSyncIn").checked?"1":"0"); }
 function saveTdKey(){ const v=$("tdKeyIn").value.trim(); if(v){ localStorage.setItem("tdKey",v); toast("APIキーを保存した"); } }
 
 /* ================= バックアップ ================= */
@@ -861,6 +921,7 @@ function importJson(f){
 async function tickPrice(){
   const key=localStorage.getItem("tdKey"); if(!key) return;
   try{
+    await apiGate();
     const r=await fetch(`https://api.twelvedata.com/price?symbol=XAU/USD&apikey=${key}`);
     const j=await r.json(); if(j.price) $("livePrice").textContent="$"+(+j.price).toFixed(2);
   }catch(e){}
@@ -869,11 +930,8 @@ async function tickPrice(){
 /* ================= 起動 ================= */
 setNow();
 $("tdKeyIn").value = localStorage.getItem("tdKey")||"";
-$("sbUrlIn").value = localStorage.getItem("sbUrl")||"";
-$("sbKeyIn").value = localStorage.getItem("sbKey")||"";
-$("autoSyncIn").checked = localStorage.getItem("autoSync")==="1";
-setSyncStatus();
-cloudPullOnLoad();
+cloudOnStatus();
+initCloud();
 tickPrice(); setInterval(tickPrice, 60000);
 </script>
 </body>
