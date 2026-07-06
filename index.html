@@ -578,7 +578,14 @@ async function fetchCandles(startISO, endISO, interval="5min"){
   const r=await fetch(u); const j=await r.json();
   if(j.status==="error") throw new Error(j.message||"取得エラー");
   if(!j.values) return [];
-  return j.values.map(v=>({ time:Math.floor(Date.parse(v.datetime.replace(" ","T")+"Z")/1000), open:+v.open, high:+v.high, low:+v.low, close:+v.close })).reverse();
+  const raw = j.values.map(v=>({ time:Math.floor(Date.parse(v.datetime.replace(" ","T")+"Z")/1000), open:+v.open, high:+v.high, low:+v.low, close:+v.close })).reverse();
+  // 異常値（NaN・high<low など）や同時刻の重複を取り除く。lightweight-chartsは昇順・一意な時刻でないと
+  // 一部の足が描画されない/失敗することがあるため、ここで整える。
+  const clean = raw.filter(c=>[c.time,c.open,c.high,c.low,c.close].every(Number.isFinite) && c.high>=c.low);
+  clean.sort((a,b)=>a.time-b.time);
+  const out=[];
+  clean.forEach(c=>{ if(out.length && out[out.length-1].time===c.time) out[out.length-1]=c; else out.push(c); });
+  return out;
 }
 const tsSec = ts => Math.floor(Date.parse(ts+":00Z")/1000); // JSTの壁時計をUTC扱いで統一
 function isoOf(sec){ const d=new Date(sec*1000); const p=n=>String(n).padStart(2,"0"); return `${d.getUTCFullYear()}-${p(d.getUTCMonth()+1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:00`; }
@@ -739,10 +746,10 @@ function lineFrom(t0,tEnd,price,color,style,title){
   overlaySeries.push(s);
 }
 async function loadChart(){
-  ensureChart();
   const day=$("chartDate").value||todayStr();
   $("chartMsg").innerHTML="読み込み中…";
   try{
+    ensureChart();
     const candles=await fetchCandlesCached("5min", tsSec(day+"T00:00"), tsSec(day+"T23:59"));
     if(!candles.length){ $("chartMsg").innerHTML="この日の足データがない（休場？）"; candleSeries.setData([]); clearOverlays(); return; }
     candleSeries.setData(candles);
@@ -770,7 +777,7 @@ async function loadChart(){
     markers.sort((a,b)=>a.time-b.time);
     candleSeries.setMarkers(markers);
     chart.timeScale().fitContent();
-    $("chartMsg").innerHTML=dayLogs.length?`✓ ${day} の配信 ${dayLogs.length}件を描画`:`この日の配信記録はない（ローソクのみ表示）`;
+    $("chartMsg").innerHTML=(dayLogs.length?`✓ ${day} の配信 ${dayLogs.length}件を描画`:`この日の配信記録はない（ローソクのみ表示）`)+`（ローソク足 ${candles.length}本）`;
   }catch(e){ $("chartMsg").innerHTML=`<span style="color:var(--bear)">${e.message}</span>`; }
 }
 function nearestTime(candles,t){ let best=candles[0].time; for(const c of candles){ if(c.time<=t) best=c.time; else break; } return best; }
