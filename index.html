@@ -99,6 +99,12 @@ label{display:block;font-size:11px;color:var(--mute);margin:10px 0 5px;letter-sp
 .chart-nav input[type=date]{flex:1}
 .chart-nav .btn{flex:0 0 auto}
 
+/* stats */
+.statline{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;padding:6px 0;border-top:1px solid var(--border);font-size:13px}
+.statline:first-of-type{border-top:none}
+.statline .sl-n{flex:0 0 52px;color:var(--mute);font-size:11px;letter-spacing:.05em}
+.statline i{font-style:normal;color:var(--mute);font-size:11px;margin-left:2px}
+
 /* toast */
 #toast{position:fixed;bottom:84px;left:50%;transform:translateX(-50%);background:#000c;color:#fff;padding:9px 18px;border-radius:20px;font-size:13px;opacity:0;transition:.25s;pointer-events:none;z-index:99;white-space:nowrap}
 #toast.show{opacity:1}
@@ -511,11 +517,47 @@ function commitBulkImport(){
 
 /* ================= タイムライン ================= */
 let statusCache = JSON.parse(localStorage.getItem("royStatus")||"{}"); // {logId: {sigIdx: label}}
+// 成績集計：失効を除いた全シグナルを、判定ラベルから「発動→TP到達→完走」の段階で数える
+function calcStats(){
+  const month = todayStr().slice(0,7);
+  const mk = ()=>({total:0,unjudged:0,judged:0,fired:0,tp:0,full:0});
+  const acc = {all:mk(), month:mk(), long:mk(), short:mk()};
+  logs.forEach(L=>{
+    L.sigs.forEach((s,i)=>{
+      if(L.dead[i]) return;
+      const label = statusCache[L.id]?.[i];
+      [acc.all, L.ts.slice(0,7)===month?acc.month:null, s.dir==="long"?acc.long:acc.short].forEach(b=>{
+        if(!b) return;
+        b.total++;
+        if(!label || ["データなし","判定エラー","—"].includes(label)){ b.unjudged++; return; }
+        b.judged++;
+        if(label==="待機中") return;
+        b.fired++;
+        if(/TP\d+到達|最終TP/.test(label)) b.tp++;
+        if(label.includes("最終TP")) b.full++;
+      });
+    });
+  });
+  return acc;
+}
+function statsHtml(){
+  const a = calcStats();
+  if(!a.all.total) return "";
+  const pct=(x,y)=>y?Math.round(x/y*100)+"%":"–";
+  const line=(name,b)=>`<div class="statline"><span class="sl-n">${name}</span><span class="num">判定 ${b.judged}</span><span class="num">発動 ${b.fired}<i>(${pct(b.fired,b.judged)})</i></span><span class="num">TP ${b.tp}<i>(${pct(b.tp,b.fired)})</i></span><span class="num">完走 ${b.full}<i>(${pct(b.full,b.fired)})</i></span></div>`;
+  let h = `<div class="card" style="padding:12px 14px"><label style="margin-top:0">📊 ロイ成績（失効を除く）</label>`;
+  h += line("今月", a.month);
+  h += line("全期間", a.all);
+  h += `<div class="hint" style="margin-top:6px">ロング TP率 <span class="num">${pct(a.long.tp,a.long.fired)}</span>（発動${a.long.fired}件） ／ ショート TP率 <span class="num">${pct(a.short.tp,a.short.fired)}</span>（発動${a.short.fired}件）</div>`;
+  if(a.all.unjudged) h += `<div class="hint">未判定 ${a.all.unjudged}件 → 「📡 ステータス判定を更新」で反映</div>`;
+  h += `</div>`;
+  return h;
+}
 function renderTimeline(){
   if(!logs.length){ $("timeline").innerHTML='<div class="empty">まだ配信の記録がない。<br>「貼る」からロイさんの配信を保存しよう。</div>'; return; }
   const byDay={};
   [...logs].sort((a,b)=>a.ts<b.ts?1:-1).forEach(L=>{ const d=L.ts.slice(0,10); (byDay[d]=byDay[d]||[]).push(L); });
-  let h="";
+  let h=statsHtml();
   Object.keys(byDay).forEach(day=>{
     const wd=["日","月","火","水","木","金","土"][new Date(day+"T00:00").getDay()];
     h+=`<div class="day-h"><span class="d num">${day}（${wd}）</span><span class="line"></span><button class="btn sm" onclick="viewDay('${day}')">📈 この日をチャートで</button></div><div class="tl">`;
@@ -633,37 +675,56 @@ async function evalMaStages(stages, sinceSec, untilSec){
 }
 
 /* ================= ステータス判定 ================= */
+// 確定済みの判定（過去日の相場は変わらないので二度と再取得しない）
+let statusFinal = JSON.parse(localStorage.getItem("royStatusFinal")||"{}"); // {logId: {sigIdx: true}}
+const isMaSig = s => s.maStages && s.maStages.length;
+function markFinal(id,i){ (statusFinal[id]=statusFinal[id]||{})[i]=true; }
+// 判定が不安定なラベル（API不調・休場の可能性）は確定させない
+const UNSTABLE = ["データなし","判定エラー","—"];
 async function refreshStatuses(){
   const targets = logs.filter(L=>L.sigs.length);
   if(!targets.length){ toast("判定する配信がない"); return; }
-  $("tlMsg").innerHTML="判定中…";
   candleCache.clear();
   try{
     const nowSec = Math.floor(Date.now()/1000);
-    const isMa = s => s.maStages && s.maStages.length;
-    // 通常シグナル（ゾーン/条件ライン/付近）：日ごとにまとめて5分足取得
-    const simpleTargets = targets.filter(L=>L.sigs.some(s=>!isMa(s)));
-    const days=[...new Set(simpleTargets.map(L=>L.ts.slice(0,10)))].slice(-14);
+    const today = todayStr();
+    const needsJudge = (L,i,s) => !L.dead[i] && !(statusFinal[L.id]?.[i]);
+    // 通常シグナル（ゾーン/条件ライン/付近）：日ごとにまとめて5分足取得。未確定のある日だけ。
+    const days=[...new Set(
+      targets.filter(L=>L.sigs.some((s,i)=>!isMaSig(s)&&needsJudge(L,i,s))).map(L=>L.ts.slice(0,10))
+    )].sort();
+    let done=0;
     for(const day of days){
+      $("tlMsg").innerHTML=`判定中… (${++done}/${days.length}日)`;
       const candles = await fetchCandlesCached("5min", tsSec(day+"T00:00"), tsSec(day+"T23:59"));
       logs.filter(L=>L.ts.slice(0,10)===day).forEach(L=>{
         const after = candles.filter(c=>c.time>=tsSec(L.ts));
         statusCache[L.id]=statusCache[L.id]||{};
-        L.sigs.forEach((s,i)=>{ if(!isMa(s)) statusCache[L.id][i]=evalSig(s,after); });
+        L.sigs.forEach((s,i)=>{
+          if(isMaSig(s)||!needsJudge(L,i,s)) return;
+          const label = evalSig(s,after);
+          statusCache[L.id][i]=label;
+          // その日が終わっていれば結果は今後変わらない → 確定
+          if(day<today && !UNSTABLE.includes(label)) markFinal(L.id,i);
+        });
       });
     }
     // MA条件つきシグナル：1件ずつ、配信時刻から広い期間で段階判定
     for(const L of targets){
       for(let i=0;i<L.sigs.length;i++){
         const s=L.sigs[i];
-        if(isMa(s)){
-          statusCache[L.id]=statusCache[L.id]||{};
-          statusCache[L.id][i] = await evalMaSig(s, tsSec(L.ts), nowSec);
-        }
+        if(!isMaSig(s)||!needsJudge(L,i,s)) continue;
+        $("tlMsg").innerHTML=`判定中… (MA条件: ${L.ts.slice(5,10)})`;
+        statusCache[L.id]=statusCache[L.id]||{};
+        const label = await evalMaSig(s, tsSec(L.ts), nowSec);
+        statusCache[L.id][i]=label;
+        // 最終TP到達、または14日間の判定窓が過ぎていれば確定
+        if(label.includes("最終TP") || (tsSec(L.ts)+14*86400<nowSec && !UNSTABLE.includes(label))) markFinal(L.id,i);
       }
     }
     localStorage.setItem("royStatus",JSON.stringify(statusCache));
-    $("tlMsg").innerHTML=`✓ 判定を更新（直近${Math.min(days.length,14)}日分＋MA条件シグナル）`;
+    localStorage.setItem("royStatusFinal",JSON.stringify(statusFinal));
+    $("tlMsg").innerHTML=`✓ 判定を更新（新規取得 ${days.length}日分・確定済みはスキップ）`;
     renderTimeline();
   }catch(e){ $("tlMsg").innerHTML=`<span style="color:var(--bear)">${e.message}</span>`; }
 }
