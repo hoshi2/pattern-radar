@@ -146,6 +146,7 @@ label{display:block;font-size:11px;color:var(--mute);margin:10px 0 5px;letter-sp
   <h2>タイムライン</h2>
   <div class="row" style="margin-bottom:4px">
     <button class="btn sm" onclick="refreshStatuses()">📡 ステータス判定を更新</button>
+    <button class="btn sm" onclick="copyPineAll()">📋 全期間のPineをコピー</button>
   </div>
   <div class="msg" id="tlMsg"></div>
   <div id="timeline"></div>
@@ -777,25 +778,48 @@ function nearestTime(candles,t){ let best=candles[0].time; for(const c of candle
 function chartDayMove(d){ const cur=new Date(($("chartDate").value||todayStr())+"T00:00"); cur.setDate(cur.getDate()+d); $("chartDate").value=cur.toISOString().slice(0,10); loadChart(); }
 
 /* ================= Pine生成 ================= */
-function copyPine(id){
-  const L=logs.find(x=>x.id===id); if(!L)return;
-  const d=L.ts; const Y=d.slice(0,4),M=+d.slice(5,7),D=+d.slice(8,10),h=+d.slice(11,13),m=+d.slice(14,16);
-  let p=`//@version=5\nindicator("Roy ${d.slice(5,10)} ${d.slice(11,16)}", overlay=true)\nt0 = timestamp("Asia/Tokyo", ${Y}, ${M}, ${D}, ${h}, ${m})\n`;
-  p+=`f_line(p, col, sty, txt) =>\n    if barstate.islastconfirmedhistory\n        line.new(t0, p, time, p, xloc=xloc.bar_time, color=col, style=sty, width=1)\n        label.new(time, p, txt, xloc=xloc.bar_time, style=label.style_label_left, color=color.new(color.black,100), textcolor=col, size=size.small)\n`;
-  L.sigs.forEach((s,i)=>{
-    if(L.dead[i]) return;
+function pineHeader(title, wide){
+  const opts = wide ? `, max_lines_count=500, max_labels_count=500` : "";
+  return `//@version=5\nindicator("${title}", overlay=true${opts})\nf_line(t0, p, col, sty, txt) =>\n    if barstate.islastconfirmedhistory\n        line.new(t0, p, time, p, xloc=xloc.bar_time, color=col, style=sty, width=1)\n        label.new(time, p, txt, xloc=xloc.bar_time, style=label.style_label_left, color=color.new(color.black,100), textcolor=col, size=size.small)\n`;
+}
+function pineSigLines(sigs, dead, t0Var){
+  let p="";
+  sigs.forEach((s,i)=>{
+    if(dead[i]) return;
     const col = s.dir==="long"?"color.new(#26a69a,0)":"color.new(#ef5350,0)";
     const tag = s.dir==="long"?"L":"S";
     if(s.zone){
-      p+=`f_line(${s.zone[0]}, ${col}, line.style_dashed, "${tag}ゾーン下")\n`;
-      p+=`f_line(${s.zone[1]}, ${col}, line.style_dashed, "${tag}ゾーン上")\n`;
+      p+=`f_line(${t0Var}, ${s.zone[0]}, ${col}, line.style_dashed, "${tag}ゾーン下")\n`;
+      p+=`f_line(${t0Var}, ${s.zone[1]}, ${col}, line.style_dashed, "${tag}ゾーン上")\n`;
     }
-    if(s.trigger) p+=`f_line(${s.trigger.level}, ${col}, line.style_solid, "${s.trigger.type==="break_up"?"ブレイク":"実体割れ"}")\n`;
-    if(!s.zone&&!s.trigger&&s.approx!=null) p+=`f_line(${s.approx}, ${col}, line.style_dotted, "${tag}付近")\n`;
-    if(s.alt&&s.alt.zone){ p+=`f_line(${s.alt.zone[0]}, color.new(${s.dir==="long"?"#26a69a":"#ef5350"},40), line.style_dotted, "代替下")\nf_line(${s.alt.zone[1]}, color.new(${s.dir==="long"?"#26a69a":"#ef5350"},40), line.style_dotted, "代替上")\n`; }
-    s.tps.forEach((tp,k)=>{ p+=`f_line(${tp}, color.new(#e0b64f,0), line.style_dashed, "${k===s.tps.length-1?"Lst":"TP"+(k+1)}")\n`; });
+    if(s.trigger) p+=`f_line(${t0Var}, ${s.trigger.level}, ${col}, line.style_solid, "${s.trigger.type==="break_up"?"ブレイク":"実体割れ"}")\n`;
+    if(!s.zone&&!s.trigger&&s.approx!=null) p+=`f_line(${t0Var}, ${s.approx}, ${col}, line.style_dotted, "${tag}付近")\n`;
+    if(s.alt&&s.alt.zone){ p+=`f_line(${t0Var}, ${s.alt.zone[0]}, color.new(${s.dir==="long"?"#26a69a":"#ef5350"},40), line.style_dotted, "代替下")\nf_line(${t0Var}, ${s.alt.zone[1]}, color.new(${s.dir==="long"?"#26a69a":"#ef5350"},40), line.style_dotted, "代替上")\n`; }
+    s.tps.forEach((tp,k)=>{ p+=`f_line(${t0Var}, ${tp}, color.new(#e0b64f,0), line.style_dashed, "${k===s.tps.length-1?"Lst":"TP"+(k+1)}")\n`; });
   });
+  return p;
+}
+function pineT0(ts, varName){
+  const Y=ts.slice(0,4),M=+ts.slice(5,7),D=+ts.slice(8,10),h=+ts.slice(11,13),m=+ts.slice(14,16);
+  return `${varName} = timestamp("Asia/Tokyo", ${Y}, ${M}, ${D}, ${h}, ${m})\n`;
+}
+function copyPine(id){
+  const L=logs.find(x=>x.id===id); if(!L)return;
+  let p = pineHeader(`Roy ${L.ts.slice(5,10)} ${L.ts.slice(11,16)}`, false);
+  p += pineT0(L.ts, "t0");
+  p += pineSigLines(L.sigs, L.dead, "t0");
   navigator.clipboard.writeText(p).then(()=>toast("Pineをコピーした → TradingViewのPineエディタに貼る"));
+}
+function copyPineAll(){
+  const targets = logs.filter(L=>L.sigs.some((s,i)=>!L.dead[i]));
+  if(!targets.length){ toast("コピーする配信がない"); return; }
+  let p = pineHeader("Roy Log 全期間", true);
+  targets.forEach((L,li)=>{
+    const v = `t0_${li}`;
+    p += pineT0(L.ts, v);
+    p += pineSigLines(L.sigs, L.dead, v);
+  });
+  navigator.clipboard.writeText(p).then(()=>toast(`${targets.length}件分のPineをコピーした → TradingViewのPineエディタに貼る`));
 }
 
 /* ================= クラウド保存 (Firebase Firestore) ================= */
